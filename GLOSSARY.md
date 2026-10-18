@@ -23,6 +23,10 @@ _Avoid_: plain "shift" when meaning the schedule
 **Grace Period**:
 The configurable wait after a Shift ends before checking for a submission. A submission counts if it arrives between clock-in and the end of the Grace Period. A Shift ends at clock-out; a Shift still open after its **Scheduled Shift**'s planned end is treated as ending then. An open Shift with no Scheduled Shift waits for the real clock-out.
 
+**Shift Entry**:
+Connecteam's own field an employee can be made to fill in before clocking out (e.g. "Completed the form? Confirmed"). It is only the employee's word, not a Compliance Form submission, and this integration ignores it.
+_Avoid_: shift attachment, clock-out form
+
 **Missed Form**:
 A Shift whose Grace Period has ended with no Compliance Form submission from that user.
 
@@ -47,6 +51,7 @@ _Avoid_: Deployment admins, recipients
 - A **Missed Form** produces one **Reminder**, an optional **Reminder Task**, and at most one **Escalation**
 - A submission made after the **Reminder** but before the **Escalation** cancels the Escalation and closes the **Reminder Task**
 - Every user who clocks in is covered; there is no narrowing by group or time clock
+- A **Shift** first known of more than 24 hours after it ended (e.g. one an **Admin** adds for a past day) is not checked: no **Reminder**, no **Escalation**
 
 ## Example dialogue
 
