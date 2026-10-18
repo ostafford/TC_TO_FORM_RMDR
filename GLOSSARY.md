@@ -42,11 +42,15 @@ An optional Connecteam Quick Task assigned to the employee for a Missed Form, wh
 _Avoid_: quick task (on its own, it's ambiguous with any other Quick Task)
 
 **Escalation**:
-The chat direct message sent to each **Admin**, and to the employee's direct manager where the account uses direct managers, when a Missed Form is still unsubmitted after a further configurable delay.
+The chat direct message sent to each **Admin** except **Excluded Admins**, and to the employee's direct manager where the account uses direct managers, when a Missed Form is still unsubmitted after a further configurable delay. It says who missed the form and for which Shift, never any form content.
 
 **Admin**:
-Any user with an admin role in the client's Connecteam account. Not a list chosen at setup.
+Any user with an admin role in the client's Connecteam account, whatever that role's permissions cover. Not a list chosen at setup: someone who becomes an Admin later is included automatically.
 _Avoid_: Deployment admins, recipients
+
+**Excluded Admin**:
+An **Admin** the client has chosen at setup not to send Escalations to. Still receives Escalations for employees they are the direct manager of.
+_Avoid_: muted, opted-out (both suggest the Admin chose it)
 
 ## Relationships
 
