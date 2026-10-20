@@ -28,6 +28,7 @@ export interface FakeSubmission {
   formId: number;
   submittingUserId: number;
   submissionTimestamp: number;
+  answers?: unknown[];
 }
 
 export interface SentDm {
@@ -46,6 +47,8 @@ export class FakeConnecteam {
   readonly forms = new Map<number, string>();
   readonly submissions: FakeSubmission[] = [];
   readonly #scripted: Array<{ method: string; pathPrefix: string; status: number }> = [];
+  /** Runs while a DM is being sent, before it's answered: for racing a webhook against a send. */
+  duringDm: ((userId: number) => Promise<void>) | null = null;
 
   addUser(u: FakeUser): this {
     this.users.set(u.userId, u);
@@ -86,6 +89,12 @@ export class FakeConnecteam {
     if (i !== -1) {
       const [s] = this.#scripted.splice(i, 1);
       return json(s!.status, { detail: "scripted failure" });
+    }
+    const dm = method === "POST" && url.pathname.match(/^\/chat\/v1\/conversations\/privateMessage\/(\d+)$/);
+    if (dm && this.duringDm) {
+      const hook = this.duringDm;
+      this.duringDm = null;
+      await hook(Number(dm[1]));
     }
     return this.#answer(call);
   }) as typeof fetch;

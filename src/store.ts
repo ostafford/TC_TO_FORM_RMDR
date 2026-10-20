@@ -3,6 +3,7 @@
  * seconds.
  */
 import type { TimeActivity } from "./connecteam/types.js";
+import type { CreditCandidate } from "./crediting/choose.js";
 
 /**
  * open: no end yet. grace: waiting for the Grace Period to end. submitted: a
@@ -34,6 +35,9 @@ export interface SegmentWrite {
 
 /** How long a cron run holds the Shifts it took. Longer than any one run. */
 const LEASE_SECONDS = 5 * 60;
+
+/** The statuses of a Shift that still needs a form. */
+const NEEDS_FORM = "'open', 'grace', 'reminded', 'escalated'";
 
 /** A Shift first known more than this long after its recorded end is never checked. */
 export const BACKFILL_CUTOFF_SECONDS = 24 * 60 * 60;
@@ -190,15 +194,53 @@ export class WorkList {
     await this.db.prepare("UPDATE shifts SET lease_until = NULL WHERE id = ?").bind(shiftId).run();
   }
 
-  /** A submission arrived in time: nothing more to do for this Shift. */
-  async markSubmitted(shiftId: string, formSubmissionId: string): Promise<void> {
-    await this.db
+  /**
+   * The user's Shifts that still need a form, for crediting (#26): open, in
+   * their Grace Period, or a Missed Form (reminded or escalated), not deleted
+   * and not yet credited.
+   */
+  async creditCandidates(userId: number): Promise<CreditCandidate[]> {
+    const rows = await this.db
       .prepare(
-        `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?
-         WHERE id = ?`,
+        `SELECT id, start_at, start_tz, grace_ends_at, status, form_ids FROM shifts
+         WHERE user_id = ? AND status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL`,
+      )
+      .bind(userId)
+      .all<Record<string, unknown>>();
+    return rows.results.map((r) => ({
+      id: String(r.id),
+      startAt: Number(r.start_at),
+      startTz: String(r.start_tz),
+      graceEndsAt: r.grace_ends_at === null ? null : Number(r.grace_ends_at),
+      status: r.status as CreditCandidate["status"],
+      formIds: JSON.parse(String(r.form_ids)) as number[],
+    }));
+  }
+
+  /** The Shift this submission is already credited to, or `null`. */
+  async creditedTo(formSubmissionId: string): Promise<string | null> {
+    const r = await this.db
+      .prepare("SELECT id FROM shifts WHERE credited_submission_id = ?")
+      .bind(formSubmissionId)
+      .first<{ id: string }>();
+    return r?.id ?? null;
+  }
+
+  /**
+   * Credit a submission to a Shift: it's submitted, and nothing more is due
+   * (no Reminder, no Escalation). Returns `false`, changing nothing, when the
+   * Shift no longer needs a form or the submission already counts for another.
+   */
+  async credit(shiftId: string, formSubmissionId: string): Promise<boolean> {
+    const r = await this.db
+      .prepare(
+        `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?1
+         WHERE id = ?2 AND status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM shifts WHERE credited_submission_id = ?1)`,
       )
       .bind(formSubmissionId, shiftId)
       .run();
+    return r.meta.changes === 1;
   }
 
   /**
@@ -235,7 +277,10 @@ export class WorkList {
     await this.db.batch([
       this.#sendDone(claimKey, now),
       this.db
-        .prepare("UPDATE shifts SET status = 'reminded', reminded_at = ?, due_at = ?, lease_until = NULL WHERE id = ?")
+        // A submission credited mid-send wins: the Shift stays submitted.
+        .prepare(
+          "UPDATE shifts SET status = 'reminded', reminded_at = ?, due_at = ?, lease_until = NULL WHERE id = ? AND status = 'grace'",
+        )
         .bind(now, escalateAt, shiftId),
     ]);
   }
@@ -248,7 +293,7 @@ export class WorkList {
   /** Every Escalation went out: nothing more is due for this Shift. */
   async markEscalated(shiftId: string): Promise<void> {
     await this.db
-      .prepare("UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL WHERE id = ?")
+      .prepare("UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL WHERE id = ? AND status = 'reminded'")
       .bind(shiftId)
       .run();
   }

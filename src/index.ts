@@ -5,8 +5,10 @@
 import { ConnecteamClient } from "./connecteam/client.js";
 import { DEFAULT_SCHEME, verifyWebhookSignature } from "./connecteam/signature.js";
 import { runDueSteps } from "./cron/dueSteps.js";
-import { readSettings, type Env } from "./env.js";
+import { creditSubmission } from "./crediting/credit.js";
+import { creditRules, readSettings, type Env } from "./env.js";
 import { WorkList } from "./store.js";
+import { isFormsDelivery, parseFormSubmissionDelivery } from "./webhook/formSubmission.js";
 import { parseTimeActivityDelivery } from "./webhook/timeActivity.js";
 
 export interface WorkerOptions {
@@ -40,11 +42,28 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
         return json(400, { error: "malformed JSON body" });
       }
 
+      const store = new WorkList(env.DB);
+      const now = opts.now ? opts.now() : Math.floor(Date.now() / 1000);
+
+      if (isFormsDelivery(payload)) {
+        const form = parseFormSubmissionDelivery(payload);
+        if (form.kind === "malformed") return json(400, { error: "not a form submission delivery" });
+        await store.recordDelivery(form, now);
+        if (form.kind === "ignored") return json(200, { ok: true });
+        const settings = readSettings(env);
+        if (!settings.ok) {
+          log({ evt: "webhook", status: 500, problems: settings.problems });
+          return json(500, { error: "settings incomplete" });
+        }
+        // A late submission cancels the Escalation as soon as it arrives.
+        const shiftId = await creditSubmission(store, form.submission, creditRules(settings.settings));
+        log({ evt: "webhook", status: 200, eventType: form.eventType, userId: form.userId, creditedTo: shiftId });
+        return json(200, { ok: true });
+      }
+
       const delivery = parseTimeActivityDelivery(payload);
       if (delivery.kind === "malformed") return json(400, { error: "not a time activity delivery" });
 
-      const store = new WorkList(env.DB);
-      const now = opts.now ? opts.now() : Math.floor(Date.now() / 1000);
       if (delivery.kind === "ignored") {
         await store.recordDelivery(delivery, now);
         return json(200, { ok: true });

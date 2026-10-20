@@ -62,7 +62,24 @@ export interface FormSubmission {
   formId: number;
   /** When it was submitted (Unix seconds), not when the form was opened. */
   submissionTimestamp: number;
+  submissionTimezone?: string;
   submittingUserId: number;
+  answers?: FormAnswer[];
+}
+
+/**
+ * One answer on a submission. Only the fields this project reads: a
+ * `datetime` answer (the Shift Date Question) carries `timestamp` (Unix
+ * seconds), `timezone`, `isDateSubmitted` and `isTimeSubmitted` (per the
+ * docs; not seen live).
+ */
+export interface FormAnswer {
+  questionId: string;
+  questionType: string;
+  wasSubmittedEmpty?: boolean;
+  timestamp?: number;
+  timezone?: string;
+  isDateSubmitted?: boolean;
 }
 
 export interface RateLimit {

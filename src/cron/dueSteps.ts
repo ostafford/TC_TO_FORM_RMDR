@@ -7,7 +7,8 @@
  *    again, then an Escalation to each recipient if still nothing.
  */
 import type { ConnecteamClient } from "../connecteam/client.js";
-import type { Settings } from "../env.js";
+import { creditSubmission } from "../crediting/credit.js";
+import { creditRules, type Settings } from "../env.js";
 import { escalationRecipients } from "../escalation/recipients.js";
 import { escalation } from "../messages/escalation.js";
 import { reminderShiftEnded } from "../messages/reminder.js";
@@ -46,18 +47,22 @@ async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
   return "skipped";
 }
 
-/** Did they submit between the Shift's first clock-in and `toSeconds`? Returns a result to stop with, or `null` when nothing arrived. */
+/**
+ * Did they submit between the Shift's first clock-in and `toSeconds`? Each
+ * submission in the window not yet credited elsewhere goes through the
+ * crediting order (#26), which may credit it to another Shift instead.
+ * Returns a result to stop with, or `null` when nothing counts for this Shift.
+ */
 async function checkSubmitted(shift: ShiftRow, toSeconds: number, step: string, deps: DueStepDeps): Promise<StepResult | null> {
   for (const formId of shift.formIds) {
-    const found = await deps.ct.findFormSubmission(formId, {
+    const found = await deps.ct.listFormSubmissions(formId, {
       userId: shift.userId,
       fromSeconds: shift.startAt,
       toSeconds,
     });
     if (found.outcome !== "ok") return retry(shift, deps, { step, ...found });
-    if (found.data) {
-      await deps.store.markSubmitted(shift.id, found.data.formSubmissionId);
-      return "submitted";
+    for (const submission of found.data) {
+      if ((await creditSubmission(deps.store, submission, creditRules(deps.settings))) === shift.id) return "submitted";
     }
   }
   return null;
