@@ -30,8 +30,8 @@ describe("the webhook", () => {
   });
 
   it("rejects an unsigned or wrongly signed delivery, and nothing is scheduled", async () => {
-    expect((await h.webhook(clockOut(), {})).status).toBe(401);
-    expect((await h.webhook(clockOut(), { "x-webhook-secret": "not-the-secret" })).status).toBe(401);
+    expect((await h.webhook(clockOut(), { headers: {} })).status).toBe(401);
+    expect((await h.webhook(clockOut(), { headers: { "x-webhook-secret": "not-the-secret" } })).status).toBe(401);
 
     await h.tick(END + GRACE + MINUTE);
     expect(h.ct.calls).toEqual([]);
@@ -88,10 +88,14 @@ describe("the end of the Grace Period", () => {
   });
 
   it("times the Grace Period from the recorded end, however late the webhook arrives", async () => {
-    // Arrives (now, in real time) days after the Shift ended.
-    await h.webhook(clockOut());
-    await h.tick(END + GRACE);
+    // A backdated clock-out (up to 12 hours is allowed) arrives well after the Grace Period.
+    const arrives = END + 6 * 60 * MINUTE;
+    await h.webhook(clockOut(), { at: arrives });
+    await h.tick(arrives + MINUTE);
     expect(h.ct.dms).toHaveLength(1);
+    expect(h.ct.callsTo("GET", `/forms/v1/forms/${FORM_ID}/form-submissions`)[0]?.query.submittingEndTime).toBe(
+      String(END + GRACE),
+    );
   });
 
   it("with a submission during the Shift or the Grace Period, sends nothing", async () => {

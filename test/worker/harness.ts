@@ -18,12 +18,20 @@ export async function resetDb(): Promise<void> {
 
 export function harness() {
   const ct = new FakeConnecteam();
-  const worker = createWorker({ fetchImpl: ct.fetch });
+  let arrival = 0;
+  const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 
   return {
     ct,
 
-    async webhook(payload: unknown, headers: Record<string, string> = { "x-webhook-secret": SECRET }) {
+    /**
+     * Deliver a webhook. It arrives `at` (Unix seconds); by default a few
+     * seconds after the payload's `eventTimestamp`, as a live delivery would.
+     */
+    async webhook(payload: unknown, opts: { at?: number; headers?: Record<string, string> } = {}) {
+      const headers = opts.headers ?? { "x-webhook-secret": SECRET };
+      const stamp = (payload as { eventTimestamp?: unknown } | null)?.eventTimestamp;
+      arrival = opts.at ?? (typeof stamp === "number" ? stamp + 5 : Math.floor(Date.now() / 1000));
       const ctx = createExecutionContext();
       const body = typeof payload === "string" ? payload : JSON.stringify(payload);
       const res = await worker.fetch!(
@@ -58,6 +66,7 @@ export function timeActivity(opts: {
   end?: number;
   timezone?: string;
   requestId?: string;
+  isAutoClockOut?: boolean;
 }) {
   const timezone = opts.timezone ?? "Australia/Sydney";
   return {
@@ -73,8 +82,24 @@ export function timeActivity(opts: {
       id: opts.id,
       start: { timestamp: opts.start, timezone },
       ...(opts.end !== undefined ? { end: { timestamp: opts.end, timezone } } : {}),
+      ...(opts.isAutoClockOut !== undefined ? { isAutoClockOut: opts.isAutoClockOut } : {}),
       jobId: "job-1",
       shiftAttachments: [],
     },
+  };
+}
+
+/** A delete delivery: it carries a bare `timeActivityId`, not a `timeActivity` (#2). */
+export function deletion(opts: { eventType?: string; userId: number; id: string; at: number }) {
+  return {
+    requestId: `req-${++requests}`,
+    company: "demo",
+    eventTimestamp: opts.at,
+    webhookVersion: 1,
+    userId: opts.userId,
+    timeClockId: 67,
+    activityType: "shift",
+    eventType: opts.eventType ?? "admin_delete",
+    timeActivityId: opts.id,
   };
 }

@@ -12,6 +12,8 @@ import { parseTimeActivityDelivery } from "./webhook/timeActivity.js";
 export interface WorkerOptions {
   /** Where Connecteam calls go. Tests put a fake Connecteam here. */
   fetchImpl?: typeof fetch;
+  /** When a webhook arrives, in Unix seconds. Tests set it; the 24-hour rule (#22) reads it. */
+  now?: () => number;
 }
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify(event));
@@ -42,9 +44,14 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
       if (delivery.kind === "malformed") return json(400, { error: "not a time activity delivery" });
 
       const store = new WorkList(env.DB);
-      const now = Math.floor(Date.now() / 1000);
+      const now = opts.now ? opts.now() : Math.floor(Date.now() / 1000);
       if (delivery.kind === "ignored") {
         await store.recordDelivery(delivery, now);
+        return json(200, { ok: true });
+      }
+      if (delivery.kind === "deleted") {
+        await store.deleteSegment(delivery, now);
+        log({ evt: "webhook", status: 200, eventType: delivery.eventType, userId: delivery.userId });
         return json(200, { ok: true });
       }
 

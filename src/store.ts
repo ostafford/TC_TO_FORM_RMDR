@@ -4,7 +4,12 @@
  */
 import type { TimeActivity } from "./connecteam/types.js";
 
-export type ShiftStatus = "open" | "grace" | "submitted" | "reminded";
+/**
+ * open: no end yet. grace: waiting for the Grace Period to end. submitted: a
+ * submission was found in time. reminded: the Reminder went out. too_late:
+ * first known more than 24 hours after it ended, so never checked.
+ */
+export type ShiftStatus = "open" | "grace" | "submitted" | "reminded" | "too_late";
 
 export interface ShiftRow {
   id: string;
@@ -28,6 +33,9 @@ export interface SegmentWrite {
 /** How long a cron run holds the Shifts it took. Longer than any one run. */
 const LEASE_SECONDS = 5 * 60;
 
+/** A Shift first known more than this long after its recorded end is never checked. */
+export const BACKFILL_CUTOFF_SECONDS = 24 * 60 * 60;
+
 export class WorkList {
   constructor(private readonly db: D1Database) {}
 
@@ -37,30 +45,43 @@ export class WorkList {
   }
 
   /**
-   * Record a Shift Segment from a webhook, and when it carries a recorded end,
-   * schedule the Grace Period check from that end. One atomic batch, and safe
-   * to repeat: a duplicate delivery changes nothing, and a Shift that already
-   * has an end keeps it (edits are #22).
+   * Record a Shift Segment from any saved-record event (#22): a clock-in, a
+   * clock-out of any kind, an admin add or edit, or an approved request. One
+   * atomic batch, and safe to repeat.
+   *
+   * - The segment maps to its Shift by id. An unknown id with the same user and
+   *   first clock-in as a known Shift is that Shift recreated under a new id (a
+   *   geofence approval deletes and recreates the record), and maps back to it.
+   * - The segment's times are saved as sent, so an edit replaces them.
+   * - A Shift not yet checked (`open` or `grace`) takes its times from its
+   *   segments, and once it has an end, its Grace Period is timed from that end.
+   *   An edit before the check moves the Grace Period with it.
+   * - A Shift already checked (`submitted`, `reminded`, `too_late`) keeps its
+   *   status and schedule: an edit never starts a second check.
+   * - A Shift first known more than 24 hours after its recorded end is
+   *   `too_late` and never checked (a fixed rule, not a setting).
    */
   async recordSegment(w: SegmentWrite, opts: { formIds: number[]; gracePeriodMinutes: number; now: number }): Promise<void> {
     const a = w.activity;
     const known = await this.db
-      .prepare("SELECT shift_id FROM shift_segments WHERE time_activity_id = ?")
-      .bind(a.id)
-      .first<{ shift_id: string }>();
-    const shiftId = known?.shift_id ?? a.id;
-
+      .prepare(
+        `SELECT shift_id AS id, 0 AS rank FROM shift_segments WHERE time_activity_id = ?
+         UNION ALL
+         SELECT id, 1 AS rank FROM shifts WHERE user_id = ? AND start_at = ?
+         ORDER BY rank LIMIT 1`,
+      )
+      .bind(a.id, w.userId, a.start.timestamp)
+      .first<{ id: string }>();
+    const shiftId = known?.id ?? a.id;
     const endAt = a.end?.timestamp ?? null;
-    const graceEndsAt = endAt === null ? null : endAt + opts.gracePeriodMinutes * 60;
-    const status: ShiftStatus = endAt === null ? "open" : "grace";
+    const graceSeconds = opts.gracePeriodMinutes * 60;
 
     await this.db.batch([
       this.#delivery(w, opts.now),
       this.db
         .prepare(
-          `INSERT INTO shifts (id, user_id, time_clock_id, start_at, start_tz, end_at, scheduler_shift_id,
-                               form_ids, grace_ends_at, status, due_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO shifts (id, user_id, time_clock_id, start_at, start_tz, scheduler_shift_id, form_ids, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)
            ON CONFLICT (id) DO NOTHING`,
         )
         .bind(
@@ -69,39 +90,83 @@ export class WorkList {
           w.timeClockId,
           a.start.timestamp,
           a.start.timezone,
-          endAt,
           a.schedulerShiftId ?? null,
           JSON.stringify(opts.formIds),
-          graceEndsAt,
-          status,
-          graceEndsAt,
           opts.now,
         ),
-      // A clock-out for a Shift first seen at its clock-in.
-      this.db
-        .prepare(
-          `UPDATE shifts SET end_at = ?, grace_ends_at = ?, due_at = ?, status = 'grace'
-           WHERE id = ? AND status = 'open' AND ? IS NOT NULL`,
-        )
-        .bind(endAt, graceEndsAt, graceEndsAt, shiftId, endAt),
+      // A saved record means the Shift exists again, if a delete got there first.
+      this.db.prepare("UPDATE shifts SET deleted_at = NULL WHERE id = ?").bind(shiftId),
       this.db
         .prepare(
           `INSERT INTO shift_segments (time_activity_id, shift_id, start_at, end_at) VALUES (?, ?, ?, ?)
-           ON CONFLICT (time_activity_id) DO UPDATE SET end_at = COALESCE(shift_segments.end_at, excluded.end_at)`,
+           ON CONFLICT (time_activity_id) DO UPDATE SET
+             start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, shift_segments.end_at)`,
         )
         .bind(a.id, shiftId, a.start.timestamp, endAt),
+      // Not yet checked: take the Shift's times from its segments.
+      this.db
+        .prepare(
+          `UPDATE shifts SET start_at = s.start_at
+           FROM (SELECT MIN(start_at) AS start_at FROM shift_segments WHERE shift_id = ?1) AS s
+           WHERE shifts.id = ?1 AND shifts.status IN ('open', 'grace')`,
+        )
+        .bind(shiftId),
+      // ...and once it has an end, time the Grace Period from it. A Shift
+      // already in its Grace Period keeps the length it was given.
+      this.db
+        .prepare(
+          `UPDATE shifts SET
+             end_at = s.end_at,
+             grace_ends_at = s.end_at + CASE WHEN shifts.status = 'grace' THEN shifts.grace_ends_at - shifts.end_at ELSE ?2 END,
+             due_at = CASE WHEN shifts.created_at - s.end_at > ?3 THEN NULL
+                           ELSE s.end_at + CASE WHEN shifts.status = 'grace' THEN shifts.grace_ends_at - shifts.end_at ELSE ?2 END END,
+             status = CASE WHEN shifts.created_at - s.end_at > ?3 THEN 'too_late' ELSE 'grace' END
+           FROM (SELECT MAX(end_at) AS end_at FROM shift_segments WHERE shift_id = ?1) AS s
+           WHERE shifts.id = ?1 AND shifts.status IN ('open', 'grace') AND s.end_at IS NOT NULL`,
+        )
+        .bind(shiftId, graceSeconds, BACKFILL_CUTOFF_SECONDS),
+    ]);
+  }
+
+  /**
+   * A Shift Segment was deleted (`admin_delete`, or an approved delete
+   * request). Once a Shift has no segments left, its pending steps are
+   * cancelled: the cron skips it while `deleted_at` is set. A segment that
+   * was never recorded changes nothing.
+   */
+  async deleteSegment(
+    d: { dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string },
+    now: number,
+  ): Promise<void> {
+    const known = await this.db
+      .prepare("SELECT shift_id FROM shift_segments WHERE time_activity_id = ?")
+      .bind(d.timeActivityId)
+      .first<{ shift_id: string }>();
+    if (!known) {
+      await this.#delivery(d, now).run();
+      return;
+    }
+    await this.db.batch([
+      this.#delivery(d, now),
+      this.db.prepare("DELETE FROM shift_segments WHERE time_activity_id = ?").bind(d.timeActivityId),
+      this.db
+        .prepare(
+          `UPDATE shifts SET deleted_at = ?
+           WHERE id = ? AND NOT EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = shifts.id)`,
+        )
+        .bind(now, known.shift_id),
     ]);
   }
 
   /**
    * Lease up to `limit` Shifts whose next step is due, oldest due first. A
    * Shift another run holds is skipped, so overlapping runs never work the
-   * same Shift.
+   * same Shift, and so is a deleted one.
    */
   async takeDue(now: number, limit: number): Promise<ShiftRow[]> {
     const due = await this.db
       .prepare(
-        `SELECT * FROM shifts WHERE due_at <= ? AND (lease_until IS NULL OR lease_until <= ?)
+        `SELECT * FROM shifts WHERE due_at <= ? AND deleted_at IS NULL AND (lease_until IS NULL OR lease_until <= ?)
          ORDER BY due_at LIMIT ?`,
       )
       .bind(now, now, limit)

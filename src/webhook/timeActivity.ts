@@ -10,17 +10,26 @@ export type TimeActivityDelivery =
   | {
       kind: "segment";
       dedupeKey: string;
-      eventType: "clock_in" | "clock_out";
+      eventType: string;
       userId: number;
       timeClockId: number | null;
       activity: TimeActivity;
     }
-  /** Verified and recorded, but not an event this build acts on yet. */
+  /** A saved Shift Segment was deleted. */
+  | { kind: "deleted"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
+  /** Verified and recorded, but not an event this build acts on. */
   | { kind: "ignored"; dedupeKey: string; eventType: string; userId: number | null }
   | { kind: "malformed" };
 
-/** Events whose `timeActivity` is a saved Shift Segment this build acts on. */
-const SEGMENT_EVENTS = new Set(["clock_in", "clock_out"]);
+/**
+ * Events whose `timeActivity` is a saved Shift Segment: every way a Shift ends
+ * (#22), plus the clock-in that opens one. Approved requests are saved; the
+ * `user_*_request` and `admin_declined_*` events are only asks, carrying
+ * requested times, and are ignored.
+ */
+const SEGMENT_EVENTS = new Set(["clock_in", "clock_out", "auto_clock_out", "admin_add", "admin_edit"]);
+const APPROVED = /^(admin|auto)_approved_/;
+const DELETE_EVENTS = /^(admin_delete|(admin|auto)_approved_delete_request)$/;
 
 export function parseTimeActivityDelivery(payload: unknown): TimeActivityDelivery {
   const o = asObject(payload);
@@ -32,7 +41,14 @@ export function parseTimeActivityDelivery(payload: unknown): TimeActivityDeliver
   const activityId = typeof ta?.id === "string" ? ta.id : typeof o.timeActivityId === "string" ? o.timeActivityId : "";
   const dedupeKey = [String(o.requestId ?? ""), eventType, String(userId ?? ""), activityId].join("|");
 
-  if (o.activityType !== "shift" || !SEGMENT_EVENTS.has(eventType)) {
+  if (o.activityType !== "shift") return { kind: "ignored", dedupeKey, eventType, userId };
+
+  if (DELETE_EVENTS.test(eventType)) {
+    if (!activityId) return { kind: "malformed" };
+    return { kind: "deleted", dedupeKey, eventType, userId, timeActivityId: activityId };
+  }
+
+  if (!SEGMENT_EVENTS.has(eventType) && !APPROVED.test(eventType)) {
     return { kind: "ignored", dedupeKey, eventType, userId };
   }
 
@@ -48,7 +64,7 @@ export function parseTimeActivityDelivery(payload: unknown): TimeActivityDeliver
   return {
     kind: "segment",
     dedupeKey,
-    eventType: eventType as "clock_in" | "clock_out",
+    eventType,
     userId,
     timeClockId: typeof o.timeClockId === "number" ? o.timeClockId : null,
     activity,
