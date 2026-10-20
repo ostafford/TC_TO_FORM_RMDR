@@ -41,7 +41,7 @@ A Shift whose Grace Period has ended with no Compliance Form submission from tha
 The chat direct message sent to the employee when a Missed Form is found. If their Shift is still open, it also tells them they're still clocked in.
 
 **Reminder Task**:
-An optional Connecteam Quick Task assigned to the employee for a Missed Form. It is completed by the integration once a submission is credited to that Shift; the employee ticking it does not count. Removed if still open 7 days after the Shift.
+An optional Connecteam Quick Task assigned to the employee for a Missed Form. It is completed by the integration once a submission is credited to that Shift; the employee ticking it does not count. Removed if still open 7 days after the Shift, or at once if the Shift is deleted.
 _Avoid_: quick task (on its own, it's ambiguous with any other Quick Task)
 
 **Escalation**:
