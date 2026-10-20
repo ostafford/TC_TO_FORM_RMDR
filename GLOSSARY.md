@@ -84,6 +84,7 @@ A small service the integrator hosts once, outside every Deployment, that receiv
 - Every user who clocks in is covered; there is no narrowing by group or time clock
 - A **Shift** first known of more than 24 hours after it ended (e.g. one an **Admin** adds for a past day) is not checked: no **Reminder**, no **Escalation**
 - Editing a **Shift** already checked (new times, or a break added that splits it into new **Shift Segments**) does not start a second check
+- When a Deployment's settings change, a **Shift** already in progress keeps its scheduled times, and accepts a submission of either the old or the new **Compliance Form**; Shifts that start afterwards follow the new settings only
 
 ## Example dialogue
 
