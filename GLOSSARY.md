@@ -31,6 +31,9 @@ The configurable wait after a Shift ends before checking for a submission. A sub
 Connecteam's own field an employee can be made to fill in before clocking out (e.g. "Completed the form? Confirmed"). It is only the employee's word, not a Compliance Form submission, and this integration ignores it.
 _Avoid_: shift attachment, clock-out form
 
+**Shift Date Question**:
+An optional date question in the Compliance Form, chosen at setup, where the employee says which Shift a submission is for.
+
 **Missed Form**:
 A Shift whose Grace Period has ended with no Compliance Form submission from that user.
 
@@ -38,7 +41,7 @@ A Shift whose Grace Period has ended with no Compliance Form submission from tha
 The chat direct message sent to the employee when a Missed Form is found. If their Shift is still open, it also tells them they're still clocked in.
 
 **Reminder Task**:
-An optional Connecteam Quick Task assigned to the employee for a Missed Form, which closes once the form is submitted.
+An optional Connecteam Quick Task assigned to the employee for a Missed Form. It is completed by the integration once a submission is credited to that Shift; the employee ticking it does not count. Removed if still open 7 days after the Shift.
 _Avoid_: quick task (on its own, it's ambiguous with any other Quick Task)
 
 **Escalation**:
@@ -70,6 +73,7 @@ A small service the integrator hosts once, outside every Deployment, that receiv
 - A Compliance Form submission counts toward at most one **Shift**; each Shift needs its own
 - A **Missed Form** produces one **Reminder**, an optional **Reminder Task**, and at most one **Escalation**
 - A submission made after the **Reminder** but before the **Escalation** cancels the Escalation and closes the **Reminder Task**
+- A submission is credited to the **Shift** its **Shift Date Question** names; failing that (no such question, or no matching Shift still needing a form), to the Shift it was made during or within the Grace Period of; failing that, to the user's oldest outstanding **Missed Form**
 - Every user who clocks in is covered; there is no narrowing by group or time clock
 - A **Shift** first known of more than 24 hours after it ended (e.g. one an **Admin** adds for a past day) is not checked: no **Reminder**, no **Escalation**
 - Editing a **Shift** already checked (new times, or a break added that splits it into new **Shift Segments**) does not start a second check
