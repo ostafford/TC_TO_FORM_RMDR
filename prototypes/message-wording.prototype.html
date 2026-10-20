@@ -103,6 +103,12 @@ const V = {
     failQuota: `Service notice: this account has used 80% of today's Connecteam API allowance, which is shared with other integrations. If it is exhausted, reminders will stop until tomorrow.`,
     allClear: `Service notice: the Clock-out Form Reminder has resumed. The following were not sent because they were more than an hour overdue:\n- Reminder to Jordan Lee (${d.shiftDay})\n- Escalation for Sam Patel (Sun 19 Oct)\nPlease follow these up directly if required.`,
   })},
+  D: { name: "Chosen: B + A's opening", m: d => { const b = V.B.m(d); const hi = `Hi ${d.first} 👋\n\n`; return { ...b,
+    reminder: hi + `We haven't received your form for this shift yet.\n\nShift: ${d.shift}\nForm: ${d.form}\nWhere: ${d.where}\n\nPlease submit it now. Your manager is notified if it's still missing in ${d.delay}.`,
+    reminderOpen: hi + `You're still clocked in, and we haven't received your form for this shift yet.\n\nShift: ${d.shiftStart}, scheduled to end ${d.sched}\nForm: ${d.form}\nWhere: ${d.where}\n\n1. Clock out if you've finished.\n2. Submit the form.\n\nYour manager is notified if it's still missing in ${d.delay}.`,
+    reminderBreak: hi + `Your break is still running, and we haven't received your form for this shift yet.\n\nShift: ${d.shiftStart}, scheduled to end ${d.sched}\nForm: ${d.form}\nWhere: ${d.where}\n\n1. End your break and clock out if you've finished.\n2. Submit the form.\n\nYour manager is notified if it's still missing in ${d.delay}.`,
+    tickDm: hi + `Thanks for ticking the task, but we haven't received your form yet.\n\nShift: ${d.shift}\nForm: ${d.form}\nWhere: ${d.where}\n\nTicking the task doesn't submit the form. The task has been reopened and ticks itself off once your form arrives.`,
+  }; } },
 };
 const CARDS = [
   ["To the employee"],
@@ -125,7 +131,7 @@ const CARDS = [
 ];
 const keys = Object.keys(V);
 let cur = new URLSearchParams(location.search).get("variant");
-if (!V[cur]) cur = "A";
+if (!V[cur]) cur = "D";
 const $ = id => document.getElementById(id);
 function data() {
   const emp = $("emp").value, shift = $("shift").value;
