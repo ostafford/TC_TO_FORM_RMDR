@@ -9,7 +9,7 @@
 #   bash prototypes/setup-wizard.prototype.sh               full first-time setup
 #   bash prototypes/setup-wizard.prototype.sh --yes         same, accepting every default
 #   bash prototypes/setup-wizard.prototype.sh --step NAME   rerun one step
-#        NAME: form | timings | quiet-hours | recipients | reminder-task | webhook | key
+#        NAME: key | timezone | form | timings | quiet-hours | recipients | reminder-task | sender | alerts | webhook | test
 set -uo pipefail
 
 YES=0; ONLY=""
@@ -68,6 +68,9 @@ This sets up a small program that watches your Connecteam time clock. When
 someone clocks out and hasn't submitted your compliance form, it reminds them
 in Connecteam chat. If the form is still missing a few hours later, it tells
 your admins.
+
+If we host this for you, we run this together on a call: we sign in to
+Cloudflare, you do the Connecteam steps.
 
 You'll need, about 20 minutes:
   • a Cloudflare account (we'll check the plan together)
@@ -303,7 +306,9 @@ s_test() {
   stage "Test message"
   why "To make sure it all works, we'll send one real reminder to you, exactly as" \
       "staff will see it."
-  local me; ask me "Your name in Connecteam?" "Okky Stafford"
+  printf '  Pick someone who has the Connecteam app on hand (you, or the client on the call):\n'
+  local n; pick n "Send the test to? (number)" 1 "${ADMINS[@]%% (owner)}" "Jordan Lee"
+  local all=("${ADMINS[@]%% (owner)}" "Jordan Lee"); local me="${all[$((n-1))]}"
   would "send the Reminder DM to $me, using the real wording and a sample shift"
   if confirm "Did the message arrive on your phone?"; then ok "All set."
   else warn "Check the sender name, and that you're in the Connecteam app as $me. Then run: --step webhook"; fi
@@ -318,7 +323,8 @@ they'll get a reminder after $GRACE minutes, and your admins hear about it if
 it's still missing $DELAY hours later.
 
 To change one thing later, run this again with --step and one of:
-  form, timings, quiet-hours, recipients, reminder-task, webhook, key
+  key, timezone, form, timings, quiet-hours, recipients, reminder-task,
+  sender, alerts, webhook, test
 A copy of this session (with keys hidden) is saved next to the wizard.
 EOF
 }
@@ -334,5 +340,9 @@ case "$ONLY" in
   reminder-task) s_task; rerun_tail ;;
   webhook) s_webhook_only ;;
   key) s_key; rerun_tail ;;
+  timezone) s_timezone; rerun_tail ;;
+  sender) s_publisher; rerun_tail ;;
+  alerts) s_alerts; rerun_tail ;;
+  test) s_test ;;
   *) echo "unknown step: $ONLY"; exit 2 ;;
 esac
