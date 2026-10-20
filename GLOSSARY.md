@@ -47,6 +47,13 @@ _Avoid_: quick task (on its own, it's ambiguous with any other Quick Task)
 **Escalation**:
 The chat direct message sent to each **Admin** except **Excluded Admins**, and to the employee's direct manager where the account uses direct managers, when a Missed Form is still unsubmitted after a further configurable delay. It says who missed the form and for which Shift, never any form content.
 
+**Quiet Hours**:
+A nightly window, set per Deployment in the Deployment's time zone (default 9 pm to 7 am, can be turned off), during which Escalations wait. Reminders, Reminder Tasks and Failure Alerts are never held.
+
+**Escalation Summary**:
+One message per recipient, sent when Quiet Hours end, combining every Escalation held overnight.
+_Avoid_: digest, morning report
+
 **Admin**:
 Any user with an admin role in the client's Connecteam account, whatever that role's permissions cover. Not a list chosen at setup: someone who becomes an Admin later is included automatically.
 _Avoid_: Deployment admins, recipients
