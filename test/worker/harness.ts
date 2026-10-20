@@ -16,8 +16,10 @@ export async function resetDb(): Promise<void> {
   );
 }
 
-export function harness() {
+export function harness(settings: Partial<Record<string, string>> = {}) {
   const ct = new FakeConnecteam();
+  // The test Deployment's settings (vitest.config.ts), with any overrides.
+  const workerEnv = { ...env, ...settings } as typeof env;
   let arrival = 0;
   const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 
@@ -39,7 +41,7 @@ export function harness() {
           unknown,
           IncomingRequestCfProperties
         >,
-        env,
+        workerEnv,
         ctx,
       );
       await waitOnExecutionContext(ctx);
@@ -49,7 +51,7 @@ export function harness() {
     /** Run the cron as if it fired at `atSeconds` (Unix seconds). */
     async tick(atSeconds: number) {
       const ctx = createExecutionContext();
-      await worker.scheduled!(createScheduledController({ scheduledTime: atSeconds * 1000, cron: "* * * * *" }), env, ctx);
+      await worker.scheduled!(createScheduledController({ scheduledTime: atSeconds * 1000, cron: "* * * * *" }), workerEnv, ctx);
       await waitOnExecutionContext(ctx);
     },
   };

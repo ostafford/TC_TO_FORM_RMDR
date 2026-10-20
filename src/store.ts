@@ -6,10 +6,11 @@ import type { TimeActivity } from "./connecteam/types.js";
 
 /**
  * open: no end yet. grace: waiting for the Grace Period to end. submitted: a
- * submission was found in time. reminded: the Reminder went out. too_late:
- * first known more than 24 hours after it ended, so never checked.
+ * submission was found in time. reminded: the Reminder went out; the
+ * escalation point is due. escalated: the Escalation went out. too_late: first
+ * known more than 24 hours after it ended, so never checked.
  */
-export type ShiftStatus = "open" | "grace" | "submitted" | "reminded" | "too_late";
+export type ShiftStatus = "open" | "grace" | "submitted" | "reminded" | "escalated" | "too_late";
 
 export interface ShiftRow {
   id: string;
@@ -20,6 +21,7 @@ export interface ShiftRow {
   formIds: number[];
   graceEndsAt: number | null;
   status: ShiftStatus;
+  remindedAt: number | null;
 }
 
 export interface SegmentWrite {
@@ -56,7 +58,7 @@ export class WorkList {
    * - A Shift not yet checked (`open` or `grace`) takes its times from its
    *   segments, and once it has an end, its Grace Period is timed from that end.
    *   An edit before the check moves the Grace Period with it.
-   * - A Shift already checked (`submitted`, `reminded`, `too_late`) keeps its
+   * - A Shift already checked (`submitted`, `reminded`, `escalated`, `too_late`) keeps its
    *   status and schedule: an edit never starts a second check.
    * - A Shift first known more than 24 hours after its recorded end is
    *   `too_late` and never checked (a fixed rule, not a setting).
@@ -225,14 +227,34 @@ export class WorkList {
     await this.db.prepare("DELETE FROM send_claims WHERE claim_key = ? AND state = 'claimed'").bind(claimKey).run();
   }
 
-  /** The Reminder went out (`outcome === "ok"`): mark its claim done and the Shift reminded. */
-  async markReminded(shiftId: string, claimKey: string, now: number): Promise<void> {
+  /**
+   * The Reminder went out (`outcome === "ok"`): mark its claim done, and make
+   * the escalation point due `escalateAt`.
+   */
+  async markReminded(shiftId: string, claimKey: string, now: number, escalateAt: number): Promise<void> {
     await this.db.batch([
-      this.db.prepare("UPDATE send_claims SET state = 'done', done_at = ? WHERE claim_key = ?").bind(now, claimKey),
+      this.#sendDone(claimKey, now),
       this.db
-        .prepare("UPDATE shifts SET status = 'reminded', due_at = NULL, lease_until = NULL WHERE id = ?")
-        .bind(shiftId),
+        .prepare("UPDATE shifts SET status = 'reminded', reminded_at = ?, due_at = ?, lease_until = NULL WHERE id = ?")
+        .bind(now, escalateAt, shiftId),
     ]);
+  }
+
+  /** One recipient's send went out (`outcome === "ok"`). */
+  async markSendDone(claimKey: string, now: number): Promise<void> {
+    await this.#sendDone(claimKey, now).run();
+  }
+
+  /** Every Escalation went out: nothing more is due for this Shift. */
+  async markEscalated(shiftId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL WHERE id = ?")
+      .bind(shiftId)
+      .run();
+  }
+
+  #sendDone(claimKey: string, now: number): D1PreparedStatement {
+    return this.db.prepare("UPDATE send_claims SET state = 'done', done_at = ? WHERE claim_key = ?").bind(now, claimKey);
   }
 
   #delivery(d: { dedupeKey: string; eventType: string; userId: number | null }, now: number): D1PreparedStatement {
@@ -252,5 +274,6 @@ function toShift(r: Record<string, unknown>): ShiftRow {
     formIds: JSON.parse(String(r.form_ids)) as number[],
     graceEndsAt: r.grace_ends_at === null ? null : Number(r.grace_ends_at),
     status: r.status as ShiftStatus,
+    remindedAt: r.reminded_at === null || r.reminded_at === undefined ? null : Number(r.reminded_at),
   };
 }

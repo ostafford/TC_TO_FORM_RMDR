@@ -1,6 +1,7 @@
 /**
  * A fake Connecteam behind the real `ConnecteamClient`. It records every call
- * and answers like the API does: users, forms, form submissions filtered by
+ * and answers like the API does: users (by id, or every active user paged),
+ * forms, form submissions filtered by
  * user and an inclusive submitted-time window, and DMs. A scripted reply
  * (`failNext`) answers the next matching call instead.
  */
@@ -15,6 +16,11 @@ export interface FakeUser {
   userId: number;
   firstName: string;
   lastName: string;
+  /** `user` (the default), or `manager` / `owner` for an Admin. */
+  userType?: string;
+  isArchived?: boolean;
+  /** The user's direct manager, as the `directManager` custom field's value. */
+  directManager?: unknown;
 }
 
 export interface FakeSubmission {
@@ -86,12 +92,22 @@ export class FakeConnecteam {
 
   #answer({ method, path, query, body }: RecordedCall): Response {
     if (method === "GET" && path === "/users/v1/users") {
-      const ids = (query.userIds ?? "").split(",").map(Number);
-      const users = ids.flatMap((id) => {
-        const u = this.users.get(id);
-        return u ? [{ ...u, customFields: [] }] : [];
-      });
-      return json(200, { requestId: "r", data: { users } });
+      const all = [...this.users.values()];
+      // Connecteam's default userStatus is `active`; asking by id finds archived users too.
+      const matched = query.userIds
+        ? all.filter((u) => query.userIds!.split(",").map(Number).includes(u.userId))
+        : all.filter((u) => !u.isArchived);
+      const offset = Number(query.offset ?? 0);
+      const page = matched.slice(offset, offset + Number(query.limit ?? 10));
+      const users = page.map(({ directManager, ...u }) => ({
+        userType: "user",
+        ...u,
+        customFields:
+          directManager === undefined
+            ? []
+            : [{ customFieldId: 25145114, name: "Direct manager", type: "directManager", value: directManager }],
+      }));
+      return json(200, { requestId: "r", data: { users }, paging: { offset: offset + users.length } });
     }
 
     const subs = path.match(/^\/forms\/v1\/forms\/(\d+)\/form-submissions$/);

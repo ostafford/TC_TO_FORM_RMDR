@@ -17,6 +17,8 @@ export interface Env {
   GRACE_PERIOD_MINUTES: string;
   ESCALATION_DELAY_MINUTES: string;
   TIME_ZONE: string;
+  /** Optional: user ids, comma-separated. */
+  EXCLUDED_ADMIN_IDS?: string;
 }
 
 export interface Settings {
@@ -28,6 +30,8 @@ export interface Settings {
   gracePeriodMinutes: number;
   escalationDelayMinutes: number;
   timeZone: string;
+  /** Admins who don't get Escalations, unless they are the employee's direct manager. */
+  excludedAdminIds: number[];
 }
 
 /** The Deployment's settings, or the names of the ones that are missing or malformed. */
@@ -45,6 +49,14 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     return n;
   };
 
+  const idList = (name: keyof Env): number[] => {
+    const v = String(env[name] ?? "").trim();
+    if (!v) return [];
+    const ids = v.split(",").map((x) => Number(x.trim()));
+    if (!ids.every((n) => Number.isInteger(n) && n > 0)) problems.push(name);
+    return ids;
+  };
+
   const settings: Settings = {
     apiKey: text("CT_API_KEY"),
     webhookSecret: text("CT_WEBHOOK_SECRET"),
@@ -54,6 +66,7 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     gracePeriodMinutes: whole("GRACE_PERIOD_MINUTES"),
     escalationDelayMinutes: whole("ESCALATION_DELAY_MINUTES"),
     timeZone: text("TIME_ZONE"),
+    excludedAdminIds: idList("EXCLUDED_ADMIN_IDS"),
   };
   if (settings.timeZone && !isTimeZone(settings.timeZone)) problems.push("TIME_ZONE");
 

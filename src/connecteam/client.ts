@@ -9,6 +9,7 @@
  * Connecteam API client. Auth is the `X-API-KEY` header.
  *
  *  - GET  /users/v1/users?userIds={id}                     (no single-user GET)
+ *  - GET  /users/v1/users?limit=500&offset={n}             (active users, paged)
  *  - GET  /forms/v1/forms/{formId}
  *  - GET  /forms/v1/forms/{formId}/form-submissions        (Unix-second window)
  *  - GET  /chat/v1/conversations
@@ -36,6 +37,8 @@ export interface CtClientConfig {
 
 const DEFAULT_BASE = "https://api.connecteam.com";
 const MAX_TEXT = 500;
+/** The most users one `GET /users/v1/users` page returns. */
+const USERS_PAGE = 500;
 
 export class ConnecteamClient {
   readonly #base: string;
@@ -68,6 +71,26 @@ export class ConnecteamClient {
       const users = (b as Wrapped<{ users: ConnecteamUser[] }>).data.users;
       return users.find((u) => u.userId === userId) ?? null;
     });
+  }
+
+  /**
+   * Every active user (Connecteam's default `userStatus`), paged 500 at a
+   * time: one call for most accounts. There is no `userType` filter, so
+   * callers filter on their side (#5).
+   */
+  async listActiveUsers(): Promise<CtResult<ConnecteamUser[]>> {
+    const all: ConnecteamUser[] = [];
+    for (let offset = 0; ; offset += USERS_PAGE) {
+      const r = await this.#call("GET", `/users/v1/users?limit=${USERS_PAGE}&offset=${offset}`);
+      const page = unwrap(r, (b) => {
+        const users = (b as Wrapped<{ users: ConnecteamUser[] }>).data.users;
+        if (!Array.isArray(users)) throw new Error("no users");
+        return users;
+      });
+      if (page.outcome !== "ok") return page;
+      all.push(...page.data);
+      if (page.data.length < USERS_PAGE) return { outcome: "ok", data: all };
+    }
   }
 
   async getForm(formId: number): Promise<CtResult<Form>> {
