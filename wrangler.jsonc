@@ -5,26 +5,44 @@
   "compatibility_date": "2026-08-15",
   "observability": { "enabled": true },
 
-  // TEMPLATE: leave the per-Deployment values below blank here. Each
-  // Deployment's own values live in the git-ignored .dev.vars, and the checking
-  // deploy builds the real config from this file plus .dev.vars (playbook,
-  // ../CLAUDE.md). Never deploy this file directly: its database_id is a
-  // placeholder on purpose, so a raw `wrangler deploy` fails before it can
-  // blank a live Worker's settings.
-  // Secrets are set with `wrangler secret put`: CT_API_KEY, CT_WEBHOOK_SECRET.
+  // TEMPLATE: leave every value below blank here. Each Deployment's own values
+  // live in the git-ignored .dev.vars, and `npm run deploy` builds
+  // wrangler.deploy.json from this file plus .dev.vars, checked first
+  // (scripts/deploy-config.ts). Never deploy this file directly: its
+  // database_id is a placeholder on purpose, so a raw `wrangler deploy` fails
+  // before it can blank a live Worker's settings.
+  // Secrets are set with `wrangler secret put ... --config wrangler.deploy.json`:
+  // CT_API_KEY, CT_WEBHOOK_SECRET, and INTEGRATOR_RELAY_SECRET with the relay.
   "vars": {
     // The Compliance Form's id (GET /forms/v1/forms).
     "COMPLIANCE_FORM_ID": "",
+    // Optional: the form's date question naming which Shift a submission is for.
+    "SHIFT_DATE_QUESTION_ID": "",
     // Finishes "Where: ..." in the Reminder, e.g. "the Forms tab in the Connecteam app".
     "WHERE_TO_FIND": "",
     // Minutes after a Shift ends before checking for a submission.
     "GRACE_PERIOD_MINUTES": "",
     // Minutes after the Reminder before the Escalation.
     "ESCALATION_DELAY_MINUTES": "",
+    // "true" or "false"; FROM and UNTIL are 24-hour times like "21:00".
+    "QUIET_HOURS_ENABLED": "",
+    "QUIET_HOURS_FROM": "",
+    "QUIET_HOURS_UNTIL": "",
     // The Deployment's IANA time zone, e.g. "Australia/Sydney".
     "TIME_ZONE": "",
-    // Custom publisher id (Settings -> Feed settings); DMs go out as this sender.
-    "CT_PUBLISHER_ID": ""
+    // Optional: Admins' user ids, comma-separated, who don't get Escalations.
+    "EXCLUDED_ADMIN_IDS": "",
+    // "true" or "false"; TASK_BOARD_ID is needed when true.
+    "REMINDER_TASK_ENABLED": "",
+    "TASK_BOARD_ID": "",
+    // Custom publisher (Settings -> Feed settings): DMs go out as this sender.
+    "CT_PUBLISHER_ID": "",
+    "CT_PUBLISHER_NAME": "",
+    // The chat channel Failure Alerts go to.
+    "ALERTS_CHANNEL_ID": "",
+    // Optional: the Integrator Relay. A URL needs a client slug too.
+    "INTEGRATOR_RELAY_URL": "",
+    "INTEGRATOR_CLIENT_SLUG": ""
   },
 
   "d1_databases": [

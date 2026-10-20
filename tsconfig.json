@@ -15,6 +15,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/http", "src/connecteam", "src/messages", "test", "vitest.config.ts"],
+  "include": ["scripts", "src/http", "src/connecteam", "src/messages", "test", "vitest.config.ts"],
   "exclude": ["test/worker"]
 }
