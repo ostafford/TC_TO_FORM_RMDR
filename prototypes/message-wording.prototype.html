@@ -1,0 +1,161 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. Branch prototype/message-wording, never merged.
+  Question: what should each message say? Three tone variants, switchable with
+  ?variant=A|B|C, the bottom bar, or the arrow keys. Every message is plain text
+  (Connecteam's API sends no bold or links), kept to 500 characters.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Message Wording Prototype</title>
+<style>
+  :root { --bg:#f3f4f6; --card:#fff; --ink:#111827; --muted:#6b7280; --bubble:#e8f0fe; --line:#e5e7eb; --bad:#b91c1c; --ok:#047857; --accent:#4f46e5; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --card:#181b22; --ink:#e5e7eb; --muted:#9ca3af; --bubble:#1f2a44; --line:#2a2f3a; --bad:#f87171; --ok:#34d399; --accent:#818cf8; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; padding:16px 16px 96px; }
+  header { max-width:1100px; margin:0 auto 12px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 12px; }
+  .data { display:flex; flex-wrap:wrap; gap:8px 16px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .data label { display:flex; flex-direction:column; font-size:12px; color:var(--muted); }
+  .data input { font:inherit; color:var(--ink); background:transparent; border:1px solid var(--line); border-radius:6px; padding:4px 6px; min-width:170px; }
+  main { max-width:1100px; margin:0 auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:8px; }
+  .meta { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .title { font-weight:600; }
+  .who { font-size:12px; color:var(--muted); }
+  .bubble { background:var(--bubble); border-radius:4px 14px 14px 14px; padding:10px 12px; white-space:pre-wrap; word-wrap:break-word; }
+  .from { font-size:12px; color:var(--muted); }
+  .count { font-size:12px; font-variant-numeric:tabular-nums; }
+  .count.ok { color:var(--ok); } .count.bad { color:var(--bad); font-weight:700; }
+  .group { grid-column:1/-1; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:10px 0 -4px; }
+  #bar { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); display:flex; align-items:center; gap:10px; background:#111; color:#fff; border-radius:999px; padding:8px 12px; box-shadow:0 6px 24px rgba(0,0,0,.35); font-size:14px; z-index:9; }
+  #bar button { background:#333; color:#fff; border:0; border-radius:999px; width:32px; height:32px; font-size:16px; cursor:pointer; }
+  #bar span { min-width:190px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Message wording: prototype</h1>
+  <p class="sub">Every message the integration sends, in one tone at a time. Edit the sample details to see the counts move. The limit is 500 characters per message, and Connecteam shows these as plain text.</p>
+  <div class="data">
+    <label>Employee <input id="emp" value="Jordan Lee"></label>
+    <label>Compliance Form <input id="form" value="Daily Compliance Form"></label>
+    <label>Where to find it <input id="where" value="the Forms tab in the Connecteam app"></label>
+    <label>Shift <input id="shift" value="Mon 20 Oct, 9:00 am – 5:02 pm"></label>
+    <label>Scheduled end <input id="sched" value="5:00 pm"></label>
+    <label>Grace Period <input id="grace" value="30 minutes"></label>
+    <label>Escalation delay <input id="delay" value="4 hours"></label>
+    <label>Publisher name <input id="pub" value="Compliance Bot"></label>
+  </div>
+</header>
+<main id="out"></main>
+<div id="bar"><button id="prev" aria-label="Previous">←</button><span id="label"></span><button id="next" aria-label="Next">→</button></div>
+<script>
+const V = {
+  A: { name: "Friendly nudge", m: d => ({
+    reminder: `Hi ${d.first}, quick reminder 👋\n\nWe haven't received your ${d.form} for your shift on ${d.shift}.\n\nYou'll find it in ${d.where}. It only takes a minute.\n\nThanks!`,
+    reminderOpen: `Hi ${d.first}, quick reminder 👋\n\nYour shift on ${d.shiftStart} was scheduled to end at ${d.sched}, but you're still clocked in. Please clock out if you've finished.\n\nWe also haven't received your ${d.form} for this shift. You'll find it in ${d.where}.\n\nThanks!`,
+    reminderBreak: `Hi ${d.first}, quick reminder 👋\n\nYour shift on ${d.shiftStart} was scheduled to end at ${d.sched}, but your break is still running. Please end your break and clock out if you've finished.\n\nWe also haven't received your ${d.form} for this shift. You'll find it in ${d.where}.\n\nThanks!`,
+    taskTitle: `Submit your ${d.form} – ${d.shiftDay}`,
+    taskBody: `For your shift on ${d.shift}.\n\nThis task ticks itself off once your form arrives. Ticking it yourself doesn't submit the form.`,
+    tickDm: `Hi ${d.first}, thanks for ticking off the task, but we still haven't received your ${d.form} for ${d.shiftDay}.\n\nTicking the task doesn't submit the form. Please fill it in from ${d.where}, and the task will tick itself off.`,
+    escalation: `Heads up: ${d.emp} hasn't submitted the ${d.form} for their shift on ${d.shift}.\n\nThey were reminded ${d.delay} ago. You don't need to reply here.`,
+    escalationTick: `Heads up: ${d.emp} hasn't submitted the ${d.form} for their shift on ${d.shift}.\n\nThey were reminded ${d.delay} ago, and ticked the reminder task without submitting the form.`,
+    failSend: `⚠️ The form reminder couldn't send messages for the last hour (Connecteam didn't respond).\n\n3 reminders were not delivered: Jordan Lee, Sam Patel, Alex Kim.\n\nNothing to do yet; we'll post here when it's working again. You may want to remind them yourself.`,
+    failKey: `⛔ The form reminder has paused. Connecteam rejected its API key.\n\nWhat to do: create a new API key in Connecteam (Settings → API keys) and rerun the setup's "API key" step.\n\nNo reminders will go out until then.`,
+    failGone: `⛔ The form reminder can't find the "${d.form}" any more. It may have been deleted or renamed.\n\nWhat to do: rerun the setup's "Compliance Form" step to choose the form again.`,
+    failWebhook: `⚠️ The form reminder may not be hearing about clock-outs. The last 24 hours had shifts, but Connecteam didn't notify us.\n\nReminders are still going out, a little late.\n\nWhat to do: rerun the setup's "Webhook" step.`,
+    failQuota: `⚠️ This Connecteam account has used 80% of today's API allowance.\n\nIf it runs out, reminders stop until tomorrow. Other integrations on this account share the allowance.\n\nNothing to do yet; we'll post again if it runs out.`,
+    allClear: `✅ All clear: the form reminder is working again.\n\nWhile it was paused, these were skipped because they were more than an hour late:\n• Reminder to Jordan Lee (${d.shiftDay})\n• Escalation for Sam Patel (Sun 19 Oct)\n\nYou may want to follow those up yourself.`,
+  })},
+  B: { name: "Checklist", m: d => ({
+    reminder: `FORM NOT RECEIVED\n\nShift: ${d.shift}\nForm: ${d.form}\nWhere: ${d.where}\n\nPlease submit it now. Your manager is notified if it's still missing in ${d.delay}.`,
+    reminderOpen: `FORM NOT RECEIVED · STILL CLOCKED IN\n\nShift: ${d.shiftStart}, scheduled to end ${d.sched}\nForm: ${d.form}\nWhere: ${d.where}\n\n1. Clock out if you've finished.\n2. Submit the form.\n\nYour manager is notified if it's still missing in ${d.delay}.`,
+    reminderBreak: `FORM NOT RECEIVED · BREAK STILL RUNNING\n\nShift: ${d.shiftStart}, scheduled to end ${d.sched}\nForm: ${d.form}\nWhere: ${d.where}\n\n1. End your break and clock out if you've finished.\n2. Submit the form.\n\nYour manager is notified if it's still missing in ${d.delay}.`,
+    taskTitle: `${d.form} – ${d.shiftDay}`,
+    taskBody: `Shift: ${d.shift}\nWhere: ${d.where}\n\nCloses automatically when the form is received. Ticking it does not count as submitting.`,
+    tickDm: `TASK TICKED, FORM NOT RECEIVED\n\nShift: ${d.shift}\nForm: ${d.form}\n\nTicking the task does not submit the form. The task has been reopened and closes automatically once the form is received.`,
+    escalation: `MISSING COMPLIANCE FORM\n\nEmployee: ${d.emp}\nShift: ${d.shift}\nForm: ${d.form}\nReminded: ${d.delay} ago`,
+    escalationTick: `MISSING COMPLIANCE FORM\n\nEmployee: ${d.emp}\nShift: ${d.shift}\nForm: ${d.form}\nReminded: ${d.delay} ago\nNote: ticked the reminder task without submitting`,
+    failSend: `ALERT · MESSAGES NOT SENDING\n\nSince: 1 hour ago\nCause: Connecteam not responding\nUndelivered: 3 reminders (Jordan Lee, Sam Patel, Alex Kim)\n\nAction: none yet. An all-clear follows when it recovers.`,
+    failKey: `ALERT · PAUSED\n\nCause: Connecteam rejected the API key\nEffect: no reminders or escalations\n\nAction: create a new API key (Settings → API keys), then rerun setup step "API key".`,
+    failGone: `ALERT · FORM NOT FOUND\n\nSetting: Compliance Form ("${d.form}")\nCause: deleted or no longer available\n\nAction: rerun setup step "Compliance Form".`,
+    failWebhook: `ALERT · CLOCK-OUTS NOT ARRIVING\n\nSince: 24 hours\nEffect: reminders still sent, up to a few minutes late\n\nAction: rerun setup step "Webhook".`,
+    failQuota: `ALERT · API ALLOWANCE 80% USED\n\nShared with: every integration on this account\nIf exhausted: reminders stop until tomorrow\n\nAction: none yet.`,
+    allClear: `ALL CLEAR\n\nWorking again.\nSkipped (over an hour late):\n- Reminder: Jordan Lee, ${d.shiftDay}\n- Escalation: Sam Patel, Sun 19 Oct\n\nAction: follow these up by hand if needed.`,
+  })},
+  C: { name: "Formal / policy", m: d => ({
+    reminder: `Dear ${d.first},\n\nOur records show that the ${d.form} has not been submitted for your shift on ${d.shift}. Submitting it for every shift is required.\n\nPlease complete it now in ${d.where}. If it is not received within ${d.delay}, this will be reported to management.`,
+    reminderOpen: `Dear ${d.first},\n\nYour shift on ${d.shiftStart} was scheduled to end at ${d.sched}, and you remain clocked in. Please clock out if your work has finished.\n\nThe ${d.form} has also not been submitted for this shift. Please complete it in ${d.where}. If it is not received within ${d.delay}, this will be reported to management.`,
+    reminderBreak: `Dear ${d.first},\n\nYour shift on ${d.shiftStart} was scheduled to end at ${d.sched}, and your break has not been ended. Please end your break and clock out if your work has finished.\n\nThe ${d.form} has also not been submitted for this shift. Please complete it in ${d.where}. If it is not received within ${d.delay}, this will be reported to management.`,
+    taskTitle: `Required: ${d.form} (${d.shiftDay})`,
+    taskBody: `Required for your shift on ${d.shift}.\n\nThis task is completed automatically when the form is received. Marking it complete yourself does not record a submission.`,
+    tickDm: `Dear ${d.first},\n\nYou marked the task complete, but the ${d.form} for your shift on ${d.shiftDay} has not been received. Marking the task complete does not record a submission.\n\nThe task has been reopened. Please complete the form in ${d.where}.`,
+    escalation: `Compliance notice: ${d.emp} has not submitted the ${d.form} for their shift on ${d.shift}, ${d.delay} after being reminded.`,
+    escalationTick: `Compliance notice: ${d.emp} has not submitted the ${d.form} for their shift on ${d.shift}, ${d.delay} after being reminded. They marked the reminder task complete without submitting the form.`,
+    failSend: `Service notice: the Clock-out Form Reminder has been unable to send messages for one hour because Connecteam is not responding. Three reminders were not delivered (Jordan Lee, Sam Patel, Alex Kim). A further notice will follow on recovery.`,
+    failKey: `Service notice: the Clock-out Form Reminder is paused because Connecteam rejected its API key. No reminders or escalations will be sent. To resume, issue a new API key in Connecteam and rerun the "API key" step of the setup.`,
+    failGone: `Service notice: the Compliance Form "${d.form}" can no longer be found. To resume, rerun the "Compliance Form" step of the setup.`,
+    failWebhook: `Service notice: clock-out notifications from Connecteam have not arrived for 24 hours. Reminders continue with a short delay. To restore them, rerun the "Webhook" step of the setup.`,
+    failQuota: `Service notice: this account has used 80% of today's Connecteam API allowance, which is shared with other integrations. If it is exhausted, reminders will stop until tomorrow.`,
+    allClear: `Service notice: the Clock-out Form Reminder has resumed. The following were not sent because they were more than an hour overdue:\n- Reminder to Jordan Lee (${d.shiftDay})\n- Escalation for Sam Patel (Sun 19 Oct)\nPlease follow these up directly if required.`,
+  })},
+};
+const CARDS = [
+  ["To the employee"],
+  ["reminder", "Reminder: Shift ended", "DM to employee, Grace Period over"],
+  ["reminderOpen", "Reminder: still clocked in", "DM, open past the Scheduled Shift's end"],
+  ["reminderBreak", "Reminder: break never ended", "DM, open on a break past the scheduled end"],
+  ["taskTitle", "Reminder Task: title", "Quick Task title"],
+  ["taskBody", "Reminder Task: description", "Quick Task description"],
+  ["tickDm", "Ticked the task, no form", "DM, once, task reopened"],
+  ["To Admins and the direct manager"],
+  ["escalation", "Escalation", "DM to each recipient, after the delay"],
+  ["escalationTick", "Escalation: ticked without submitting", "same, with the extra line"],
+  ["To the Alerts Channel (Failure Alerts)"],
+  ["failSend", "Sends kept failing for an hour", "Alerts Channel"],
+  ["failKey", "API key rejected, paused", "Alerts Channel + Integrator Relay"],
+  ["failGone", "A setting points at something gone", "Alerts Channel"],
+  ["failWebhook", "Webhook seems lost", "Alerts Channel"],
+  ["failQuota", "API allowance 80% used", "Alerts Channel"],
+  ["allClear", "All clear (with skipped list)", "Alerts Channel"],
+];
+const keys = Object.keys(V);
+let cur = new URLSearchParams(location.search).get("variant");
+if (!V[cur]) cur = "A";
+const $ = id => document.getElementById(id);
+function data() {
+  const emp = $("emp").value, shift = $("shift").value;
+  return { emp, first: emp.split(" ")[0], form: $("form").value, where: $("where").value, shift,
+    shiftDay: shift.split(",")[0], shiftStart: shift.split("–")[0].trim(), sched: $("sched").value,
+    grace: $("grace").value, delay: $("delay").value };
+}
+function esc(s) { return s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c])); }
+function render() {
+  const m = V[cur].m(data()), pub = $("pub").value;
+  $("out").innerHTML = CARDS.map(c => {
+    if (c.length === 1) return `<div class="group">${c[0]}</div>`;
+    const [k, title, who] = c, text = m[k], n = [...text].length, limit = k === "taskTitle" ? 100 : 500;
+    return `<section><div class="meta"><span class="title">${title}</span><span class="count ${n > limit ? "bad" : "ok"}">${n}/${limit}</span></div>
+      <div class="who">${who}</div><div class="from">${esc(pub)}</div><div class="bubble">${esc(text)}</div></section>`;
+  }).join("");
+  $("label").textContent = `${cur} (${V[cur].name})`;
+}
+function go(step) {
+  cur = keys[(keys.indexOf(cur) + step + keys.length) % keys.length];
+  const u = new URL(location); u.searchParams.set("variant", cur); history.replaceState(null, "", u);
+  render();
+}
+$("prev").onclick = () => go(-1); $("next").onclick = () => go(1);
+addEventListener("keydown", e => {
+  if (e.target.closest("input,textarea,[contenteditable]")) return;
+  if (e.key === "ArrowLeft") go(-1); if (e.key === "ArrowRight") go(1);
+});
+document.querySelectorAll(".data input").forEach(i => i.oninput = render);
+render();
+</script>
+</body>
+</html>
