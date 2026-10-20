@@ -12,6 +12,8 @@ worker-configuration.d.ts
 .dev.vars.*
 # ...except the placeholder-only example
 !.dev.vars.example
+# built from wrangler.jsonc + .dev.vars on every deploy (scripts/deploy-config.ts)
+wrangler.deploy.json
 .env
 .env.*
 

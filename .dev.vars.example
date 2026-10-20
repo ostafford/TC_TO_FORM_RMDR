@@ -1,23 +1,53 @@
-# Copy to `.dev.vars` (git-ignored) and fill in. Used by:
+# Copy to `.dev.vars` (git-ignored) and fill in. The setup wizard writes it.
+# Used by:
+#  - `npm run deploy` and the other deploy scripts: this Deployment's own
+#    values, filled into the blank wrangler.jsonc template (scripts/deploy-config.ts)
 #  - `wrangler dev` (local Worker run)
 #  - the live integration tests (test/*.integration.test.ts), which self-skip
 #    if the values they need are absent.
 # Never copy the research key from ~/IDP/.research.env in here.
 
 # --- Cloudflare ---
-# This Deployment's D1 database id (`npx wrangler d1 list`).
+# This Deployment's D1 database id (`npx wrangler d1 list`, the clock-out-form-reminder row).
 D1_DATABASE_ID=
 
-# --- Connecteam (secrets) ---
+# --- Connecteam secrets (also set on the Worker with `wrangler secret put`) ---
 CT_API_KEY=
 CT_WEBHOOK_SECRET=
 
-# --- Connecteam (settings) ---
+# --- Compliance Form ---
 COMPLIANCE_FORM_ID=
-CT_PUBLISHER_ID=
+# Optional: the form's date question for catch-up submissions.
+SHIFT_DATE_QUESTION_ID=
+# Finishes "Where: ..." in the Reminder.
 WHERE_TO_FIND=
 
 # --- Timing ---
 GRACE_PERIOD_MINUTES=30
 ESCALATION_DELAY_MINUTES=240
+QUIET_HOURS_ENABLED=true
+QUIET_HOURS_FROM=21:00
+QUIET_HOURS_UNTIL=07:00
+# IANA name, e.g. Australia/Sydney.
 TIME_ZONE=
+
+# --- Escalation recipients ---
+# Optional: Admins' user ids, comma-separated, who don't get Escalations.
+EXCLUDED_ADMIN_IDS=
+
+# --- Reminder Task ---
+REMINDER_TASK_ENABLED=true
+# Needed when REMINDER_TASK_ENABLED=true.
+TASK_BOARD_ID=
+
+# --- Sender and alerts ---
+# Custom publisher (Settings -> Feed settings).
+CT_PUBLISHER_ID=
+CT_PUBLISHER_NAME=
+ALERTS_CHANNEL_ID=
+
+# --- Integrator Relay (optional) ---
+INTEGRATOR_RELAY_URL=
+# Needed when INTEGRATOR_RELAY_URL is set.
+INTEGRATOR_CLIENT_SLUG=
+INTEGRATOR_RELAY_SECRET=
