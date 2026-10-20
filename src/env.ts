@@ -3,6 +3,8 @@
  * Deployment's settings, kept in .dev.vars and built into the config at deploy
  * (the tracked wrangler.jsonc stays a blank template).
  */
+import type { CreditRules } from "./crediting/choose.js";
+
 export interface Env {
   DB: D1Database;
 
@@ -19,6 +21,8 @@ export interface Env {
   TIME_ZONE: string;
   /** Optional: user ids, comma-separated. */
   EXCLUDED_ADMIN_IDS?: string;
+  /** Optional: the Compliance Form's date question naming the Shift a submission is for. */
+  SHIFT_DATE_QUESTION_ID?: string;
 }
 
 export interface Settings {
@@ -32,6 +36,8 @@ export interface Settings {
   timeZone: string;
   /** Admins who don't get Escalations, unless they are the employee's direct manager. */
   excludedAdminIds: number[];
+  /** The Shift Date Question's id, or blank when none is configured. */
+  shiftDateQuestionId: string;
 }
 
 /** The Deployment's settings, or the names of the ones that are missing or malformed. */
@@ -67,6 +73,7 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     escalationDelayMinutes: whole("ESCALATION_DELAY_MINUTES"),
     timeZone: text("TIME_ZONE"),
     excludedAdminIds: idList("EXCLUDED_ADMIN_IDS"),
+    shiftDateQuestionId: String(env.SHIFT_DATE_QUESTION_ID ?? "").trim(),
   };
   if (settings.timeZone && !isTimeZone(settings.timeZone)) problems.push("TIME_ZONE");
 
@@ -80,4 +87,9 @@ function isTimeZone(zone: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** The crediting rules (#26) these settings give. */
+export function creditRules(s: Settings): CreditRules {
+  return { shiftDateQuestionId: s.shiftDateQuestionId, complianceFormId: s.complianceFormId, deploymentZone: s.timeZone };
 }

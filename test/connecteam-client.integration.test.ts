@@ -23,8 +23,8 @@ describe.skipIf(!live)("ConnecteamClient (live)", () => {
   it("answers the submission check in one call, with Unix-second bounds", async () => {
     const now = Math.floor(Date.now() / 1000);
     // A user id no account has: the check must come back ok and empty.
-    const r = await ct.findFormSubmission(formId, { userId: 1, fromSeconds: now - 86_400, toSeconds: now });
-    expect(r).toEqual({ outcome: "ok", data: null });
+    const r = await ct.listFormSubmissions(formId, { userId: 1, fromSeconds: now - 86_400, toSeconds: now });
+    expect(r).toEqual({ outcome: "ok", data: [] });
     expect(ct.lastRateLimit?.minuteLimit).toBeGreaterThan(0);
   });
 

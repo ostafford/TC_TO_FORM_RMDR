@@ -39,6 +39,8 @@ const DEFAULT_BASE = "https://api.connecteam.com";
 const MAX_TEXT = 500;
 /** The most users one `GET /users/v1/users` page returns. */
 const USERS_PAGE = 500;
+/** The most submissions one `form-submissions` call returns. */
+const SUBMISSIONS_PAGE = 100;
 
 export class ConnecteamClient {
   readonly #base: string;
@@ -103,24 +105,26 @@ export class ConnecteamClient {
   }
 
   /**
-   * The user's first submission of a form submitted inside a window, or `null`
-   * when there is none. Both bounds are Unix seconds, the time clock's unit
-   * (#3), and filter on the submitted time. One call, `limit=1`.
+   * The user's submissions of a form submitted inside a window.
+   * Both bounds are Unix seconds, the time clock's unit (#3), inclusive, and
+   * filter on the submitted time. One call: up to 100, far more than one user
+   * submits in one Shift's window, so the caller can skip any already credited
+   * to another Shift (#26).
    */
-  async findFormSubmission(
+  async listFormSubmissions(
     formId: number,
     query: { userId: number; fromSeconds: number; toSeconds: number },
-  ): Promise<CtResult<FormSubmission | null>> {
+  ): Promise<CtResult<FormSubmission[]>> {
     const qs =
       `userIds=${query.userId}` +
       `&submittingStartTimestamp=${query.fromSeconds}` +
       `&submittingEndTime=${query.toSeconds}` +
-      `&limit=1`;
+      `&limit=${SUBMISSIONS_PAGE}`;
     const r = await this.#call("GET", `/forms/v1/forms/${formId}/form-submissions?${qs}`);
     return unwrap(r, (b) => {
       const rows = (b as Wrapped<{ formSubmissions: FormSubmission[] }>).data.formSubmissions;
       if (!Array.isArray(rows)) throw new Error("no formSubmissions");
-      return rows[0] ?? null;
+      return rows;
     });
   }
 

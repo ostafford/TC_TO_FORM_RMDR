@@ -69,7 +69,7 @@ describe("the end of the Grace Period", () => {
         userIds: String(JORDAN.userId),
         submittingStartTimestamp: String(START),
         submittingEndTime: String(END + GRACE),
-        limit: "1",
+        limit: "100",
       },
     ]);
     expect(h.ct.dms).toEqual([

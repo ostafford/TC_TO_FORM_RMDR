@@ -4,7 +4,7 @@
  */
 import { env, createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { createWorker } from "../../src/index.js";
-import { FakeConnecteam } from "./fake-connecteam.js";
+import { FakeConnecteam, type FakeSubmission } from "./fake-connecteam.js";
 
 export const SECRET = "test-webhook-secret";
 export const FORM_ID = 9001;
@@ -103,5 +103,24 @@ export function deletion(opts: { eventType?: string; userId: number; id: string;
     activityType: "shift",
     eventType: opts.eventType ?? "admin_delete",
     timeActivityId: opts.id,
+  };
+}
+
+/** A `form_submission` delivery as Connecteam sends it (#3): the submission sits in `data`. */
+export function formSubmission(s: FakeSubmission, eventType = "form_submission") {
+  return {
+    requestId: `req-${++requests}`,
+    company: "demo",
+    activityType: "forms",
+    eventType,
+    eventTimestamp: s.submissionTimestamp,
+    data: {
+      submissionTimezone: "Australia/Sydney",
+      submissionStartTimestamp: s.submissionTimestamp - 60,
+      entryNum: 1,
+      isAnonymous: false,
+      answers: [],
+      ...s,
+    },
   };
 }
