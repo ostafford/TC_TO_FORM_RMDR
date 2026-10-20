@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.wrangler/
+.mf/
+worker-configuration.d.ts
+
+# secrets & local config: NEVER commit
+.dev.vars
+.dev.vars.*
+# ...except the placeholder-only example
+!.dev.vars.example
+.env
+.env.*
+
+# local D1 / sqlite
+*.sqlite
+*.sqlite-*
+
+# test / coverage
+coverage/
+*.log
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local settings
+.claude/settings.local.json

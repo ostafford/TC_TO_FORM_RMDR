@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clock-out-form-reminder",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "observability": { "enabled": true },
+
+  // TEMPLATE: leave the per-Deployment values below blank here. Each
+  // Deployment's own values live in the git-ignored .dev.vars, and the checking
+  // deploy builds the real config from this file plus .dev.vars (playbook,
+  // ../CLAUDE.md). Never deploy this file directly: its database_id is a
+  // placeholder on purpose, so a raw `wrangler deploy` fails before it can
+  // blank a live Worker's settings.
+  // Secrets are set with `wrangler secret put`: CT_API_KEY, CT_WEBHOOK_SECRET.
+  "vars": {
+    // The Compliance Form's id (GET /forms/v1/forms).
+    "COMPLIANCE_FORM_ID": "",
+    // Finishes "Where: ..." in the Reminder, e.g. "the Forms tab in the Connecteam app".
+    "WHERE_TO_FIND": "",
+    // Minutes after a Shift ends before checking for a submission.
+    "GRACE_PERIOD_MINUTES": "",
+    // Minutes after the Reminder before the Escalation.
+    "ESCALATION_DELAY_MINUTES": "",
+    // The Deployment's IANA time zone, e.g. "Australia/Sydney".
+    "TIME_ZONE": "",
+    // Custom publisher id (Settings -> Feed settings); DMs go out as this sender.
+    "CT_PUBLISHER_ID": ""
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "clock-out-form-reminder",
+      "database_id": "set-D1_DATABASE_ID-in-.dev.vars",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // ADR-0002: one cron every minute works the D1 list of due steps. No Queue.
+  "triggers": { "crons": ["* * * * *"] }
+}

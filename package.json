@@ -1,0 +1,22 @@
+{
+  "name": "clock-out-form-reminder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reminds Connecteam staff who clock out without submitting the Compliance Form, then escalates",
+  "scripts": {
+    "test": "vitest run --project node --project worker",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --project integration",
+    "test:all": "vitest run",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260830.1",
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.127.1"
+  }
+}
