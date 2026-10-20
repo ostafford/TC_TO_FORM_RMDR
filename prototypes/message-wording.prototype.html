@@ -107,6 +107,7 @@ const V = {
     reminder: hi + `We haven't received your form for this shift yet.\n\nShift: ${d.shift}\nForm: ${d.form}\nWhere: ${d.where}\n\nPlease submit it now. Your manager is notified if it's still missing in ${d.delay}.`,
     reminderOpen: hi + `You're still clocked in, and we haven't received your form for this shift yet.\n\nShift: ${d.shiftStart}, scheduled to end ${d.sched}\nForm: ${d.form}\nWhere: ${d.where}\n\n1. Clock out if you've finished.\n2. Submit the form.\n\nYour manager is notified if it's still missing in ${d.delay}.`,
     reminderBreak: hi + `Your break is still running, and we haven't received your form for this shift yet.\n\nShift: ${d.shiftStart}, scheduled to end ${d.sched}\nForm: ${d.form}\nWhere: ${d.where}\n\n1. End your break and clock out if you've finished.\n2. Submit the form.\n\nYour manager is notified if it's still missing in ${d.delay}.`,
+    escalationSummary: `MISSING COMPLIANCE FORMS (${3})\n\nForm: ${d.form}\nHeld overnight (quiet hours):\n\n- ${d.emp} · Sun 19 Oct, 2:00 pm – 10:04 pm\n- Sam Patel · Sun 19 Oct, 3:00 pm – 11:00 pm\n- Alex Kim · Mon 20 Oct, 6:00 pm – 12:30 am (AWST)\n\nEach was reminded at least ${d.delay} ago.`,
     tickDm: hi + `Thanks for ticking the task, but we haven't received your form yet.\n\nShift: ${d.shift}\nForm: ${d.form}\nWhere: ${d.where}\n\nTicking the task doesn't submit the form. The task has been reopened and ticks itself off once your form arrives.`,
   }; } },
 };
@@ -121,6 +122,7 @@ const CARDS = [
   ["To Admins and the direct manager"],
   ["escalation", "Escalation", "DM to each recipient, after the delay"],
   ["escalationTick", "Escalation: ticked without submitting", "same, with the extra line"],
+  ["escalationSummary", "Escalation summary after quiet hours (variant D only)", "one DM per recipient when quiet hours end"],
   ["To the Alerts Channel (Failure Alerts)"],
   ["failSend", "Sends kept failing for an hour", "Alerts Channel"],
   ["failKey", "API key rejected, paused", "Alerts Channel + Integrator Relay"],
@@ -144,7 +146,7 @@ function render() {
   const m = V[cur].m(data()), pub = $("pub").value;
   $("out").innerHTML = CARDS.map(c => {
     if (c.length === 1) return `<div class="group">${c[0]}</div>`;
-    const [k, title, who] = c, text = m[k], n = [...text].length, limit = k === "taskTitle" ? 100 : 500;
+    const [k, title, who] = c; if (m[k] === undefined) return ""; const text = m[k], n = [...text].length, limit = k === "taskTitle" ? 100 : 500;
     return `<section><div class="meta"><span class="title">${title}</span><span class="count ${n > limit ? "bad" : "ok"}">${n}/${limit}</span></div>
       <div class="who">${who}</div><div class="from">${esc(pub)}</div><div class="bubble">${esc(text)}</div></section>`;
   }).join("");
