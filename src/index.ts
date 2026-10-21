@@ -56,7 +56,7 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
           return json(500, { error: "settings incomplete" });
         }
         // A late submission cancels the Escalation as soon as it arrives.
-        const shiftId = await creditSubmission(store, form.submission, creditRules(settings.settings));
+        const shiftId = await creditSubmission(store, form.submission, creditRules(settings.settings), now);
         log({ evt: "webhook", status: 200, eventType: form.eventType, userId: form.userId, creditedTo: shiftId });
         return json(200, { ok: true });
       }

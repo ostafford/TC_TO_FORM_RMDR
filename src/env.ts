@@ -23,6 +23,10 @@ export interface Env {
   EXCLUDED_ADMIN_IDS?: string;
   /** Optional: the Compliance Form's date question naming the Shift a submission is for. */
   SHIFT_DATE_QUESTION_ID?: string;
+  /** "true" or "false"; blank reads as off. */
+  REMINDER_TASK_ENABLED?: string;
+  /** Needed when REMINDER_TASK_ENABLED is "true". */
+  TASK_BOARD_ID?: string;
 }
 
 export interface Settings {
@@ -38,6 +42,8 @@ export interface Settings {
   excludedAdminIds: number[];
   /** The Shift Date Question's id, or blank when none is configured. */
   shiftDateQuestionId: string;
+  /** Where new Reminder Tasks go, or `null` when the Reminder Task is off. */
+  reminderTask: { boardId: string } | null;
 }
 
 /** The Deployment's settings, or the names of the ones that are missing or malformed. */
@@ -74,7 +80,11 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     timeZone: text("TIME_ZONE"),
     excludedAdminIds: idList("EXCLUDED_ADMIN_IDS"),
     shiftDateQuestionId: String(env.SHIFT_DATE_QUESTION_ID ?? "").trim(),
+    reminderTask: null,
   };
+  const taskSwitch = String(env.REMINDER_TASK_ENABLED ?? "").trim();
+  if (taskSwitch && taskSwitch !== "true" && taskSwitch !== "false") problems.push("REMINDER_TASK_ENABLED");
+  if (taskSwitch === "true") settings.reminderTask = { boardId: text("TASK_BOARD_ID") };
   if (settings.timeZone && !isTimeZone(settings.timeZone)) problems.push("TIME_ZONE");
 
   return problems.length ? { ok: false, problems } : { ok: true, settings };

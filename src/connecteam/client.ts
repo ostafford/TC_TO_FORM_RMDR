@@ -1,7 +1,7 @@
 /*
  * Copied from EH_Webhook (~/IDP/EH_Webhook/src/connecteam/client.ts at
  * 0c5ec92) and adapted: the onboarding and pay-rate calls are dropped, and the
- * form calls this project needs are added. The result-object contract is kept:
+ * form and Quick Task calls this project needs are added. The result-object contract is kept:
  * nothing here throws on a 429, 5xx or timeout, so every caller must check
  * `outcome` (playbook, ../CLAUDE.md). Never import it from the sibling project.
  */
@@ -15,6 +15,9 @@
  *  - GET  /chat/v1/conversations
  *  - POST /chat/v1/conversations/privateMessage/{userId}   body { senderId, text }
  *  - POST /chat/v1/conversations/{conversationId}/message  body { senderId, text }
+ *  - POST   /tasks/v1/taskboards/{boardId}/tasks           (returns the new task's `id`)
+ *  - PUT    /tasks/v1/taskboards/{boardId}/tasks/{taskId}  (a full replace)
+ *  - DELETE /tasks/v1/taskboards/{boardId}/tasks/{taskId}
  *  - rate limit headers: x-ratelimit-minute-remaining / -limit, -day-remaining
  */
 import { httpJson, type HttpResponse } from "../http/json.js";
@@ -58,7 +61,7 @@ export class ConnecteamClient {
     this.#fetch = cfg.fetchImpl ?? fetch;
   }
 
-  async #call(method: "GET" | "POST", path: string, body?: unknown): Promise<HttpResponse> {
+  async #call(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<HttpResponse> {
     const r = await httpJson(
       { method, url: `${this.#base}${path}`, headers: { "X-API-KEY": this.#apiKey }, body },
       this.#fetch,
@@ -142,6 +145,48 @@ export class ConnecteamClient {
     return unwrap(r, () => null);
   }
 
+  /**
+   * Create a published Quick Task. One user makes an individual task (two or
+   * more would make one group task). Not idempotent: a repeat makes a second
+   * task, so the caller stores the returned id before anything could repeat it.
+   */
+  async createTask(boardId: string, task: QuickTask): Promise<CtResult<{ id: string }>> {
+    const r = await this.#call("POST", `/tasks/v1/taskboards/${encodeURIComponent(boardId)}/tasks`, {
+      userIds: task.userIds,
+      status: "published",
+      title: task.title,
+      description: { content: task.description },
+    });
+    return unwrap(r, (b) => {
+      const id = (b as Wrapped<{ id: string }>).data.id;
+      if (typeof id !== "string" || !id) throw new Error("no task id");
+      return { id };
+    });
+  }
+
+  /**
+   * Mark a Quick Task `completed`. The `PUT` is a full replace, so the task's
+   * title, users and description go again as they were created. Safe to
+   * repeat. A 404 means the task is gone.
+   */
+  async completeTask(boardId: string, taskId: string, task: QuickTask): Promise<CtResult<null>> {
+    const r = await this.#call(
+      "PUT",
+      `/tasks/v1/taskboards/${encodeURIComponent(boardId)}/tasks/${encodeURIComponent(taskId)}`,
+      { userIds: task.userIds, status: "completed", title: task.title, description: { content: task.description } },
+    );
+    return unwrap(r, () => null);
+  }
+
+  /** Delete a Quick Task. A 404 means it was already gone. */
+  async deleteTask(boardId: string, taskId: string): Promise<CtResult<null>> {
+    const r = await this.#call(
+      "DELETE",
+      `/tasks/v1/taskboards/${encodeURIComponent(boardId)}/tasks/${encodeURIComponent(taskId)}`,
+    );
+    return unwrap(r, () => null);
+  }
+
   /** Post to a team/channel conversation as the custom publisher. */
   async sendChannelMessage(conversationId: string, text: string): Promise<CtResult<null>> {
     const r = await this.#call("POST", `/chat/v1/conversations/${conversationId}/message`, {
@@ -150,6 +195,13 @@ export class ConnecteamClient {
     });
     return unwrap(r, () => null);
   }
+}
+
+/** The fields a Reminder Task is created with, and sent again on every `PUT`. */
+export interface QuickTask {
+  title: string;
+  userIds: number[];
+  description: string;
 }
 
 interface Wrapped<T> {

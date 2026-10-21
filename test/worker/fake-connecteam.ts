@@ -2,7 +2,8 @@
  * A fake Connecteam behind the real `ConnecteamClient`. It records every call
  * and answers like the API does: users (by id, or every active user paged),
  * forms, form submissions filtered by
- * user and an inclusive submitted-time window, and DMs. A scripted reply
+ * user and an inclusive submitted-time window, DMs, and Quick Tasks (create,
+ * a full-replace update, delete; 404 for a task that isn't there). A scripted reply
  * (`failNext`) answers the next matching call instead.
  */
 export interface RecordedCall {
@@ -31,6 +32,15 @@ export interface FakeSubmission {
   answers?: unknown[];
 }
 
+export interface FakeTask {
+  id: string;
+  boardId: string;
+  userIds: number[];
+  status: string;
+  title: string;
+  description?: { content: string };
+}
+
 export interface SentDm {
   userId: number;
   senderId: number;
@@ -46,6 +56,9 @@ export class FakeConnecteam {
   readonly users = new Map<number, FakeUser>();
   readonly forms = new Map<number, string>();
   readonly submissions: FakeSubmission[] = [];
+  /** Quick Tasks that exist now, by id. */
+  readonly tasks = new Map<string, FakeTask>();
+  #nextTask = 0;
   readonly #scripted: Array<{ method: string; pathPrefix: string; status: number }> = [];
   /** Runs while a DM is being sent, before it's answered: for racing a webhook against a send. */
   duringDm: ((userId: number) => Promise<void>) | null = null;
@@ -150,6 +163,25 @@ export class FakeConnecteam {
     if (method === "POST" && dm) {
       const b = body as { senderId: number; text: string };
       this.dms.push({ userId: Number(dm[1]), senderId: b.senderId, text: b.text });
+      return json(200, { requestId: "r", data: {} });
+    }
+
+    const board = path.match(/^\/tasks\/v1\/taskboards\/([^/]+)\/tasks$/);
+    if (method === "POST" && board) {
+      const b = body as Omit<FakeTask, "id" | "boardId">;
+      const id = `task-${++this.#nextTask}`;
+      this.tasks.set(id, { ...b, id, boardId: decodeURIComponent(board[1]!) });
+      return json(200, { requestId: "r", data: { id, userIds: b.userIds, status: b.status, title: b.title } });
+    }
+
+    const task = path.match(/^\/tasks\/v1\/taskboards\/([^/]+)\/tasks\/([^/]+)$/);
+    if (task && (method === "PUT" || method === "DELETE")) {
+      const boardId = decodeURIComponent(task[1]!);
+      const id = decodeURIComponent(task[2]!);
+      if (this.tasks.get(id)?.boardId !== boardId) return json(404, { detail: "Task not found" });
+      if (method === "DELETE") this.tasks.delete(id);
+      // A full replace: whatever isn't sent again is gone.
+      else this.tasks.set(id, { ...(body as Omit<FakeTask, "id" | "boardId">), id, boardId });
       return json(200, { requestId: "r", data: {} });
     }
 
