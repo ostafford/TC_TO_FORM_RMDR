@@ -6,7 +6,7 @@ import type { TimeActivity } from "./connecteam/types.js";
 import type { CreditCandidate } from "./crediting/choose.js";
 
 /**
- * open: no end yet. grace: waiting for the Grace Period to end. submitted: a
+ * open: no end yet, or on a manual break. grace: waiting for the Grace Period to end. submitted: a
  * submission was found in time. reminded: the Reminder went out; the
  * escalation point is due. escalated: the Escalation went out. too_late: first
  * known more than 24 hours after it ended, so never checked.
@@ -25,6 +25,14 @@ export interface ShiftRow {
   remindedAt: number | null;
 }
 
+/** A manual break, as the `time_activity` webhook sends it (#23). */
+export interface BreakWrite {
+  dedupeKey: string;
+  eventType: string;
+  userId: number;
+  activity: TimeActivity;
+}
+
 export interface SegmentWrite {
   dedupeKey: string;
   eventType: string;
@@ -35,6 +43,12 @@ export interface SegmentWrite {
 
 /** How long a cron run holds the Shifts it took. Longer than any one run. */
 const LEASE_SECONDS = 5 * 60;
+
+/** The statuses of a Shift not yet checked: its times still follow its segments and breaks. */
+const UNCHECKED = "'open', 'grace'";
+
+/** How many merges one write may make across breaks: a Shift with this many breaks resumed out of order. */
+const MAX_JOINS = 10;
 
 /** The statuses of a Shift that still needs a form. */
 const NEEDS_FORM = "'open', 'grace', 'reminded', 'escalated'";
@@ -88,10 +102,15 @@ export class WorkList {
    * - The segment maps to its Shift by id. An unknown id with the same user and
    *   first clock-in as a known Shift is that Shift recreated under a new id (a
    *   geofence approval deletes and recreates the record), and maps back to it.
+   *   So does an unknown id starting inside a Shift already checked: a break an
+   *   Admin added later split the record, and nothing announces the break
+   *   itself (tested live 2026-10-21, #23).
+   * - A segment resuming from a manual break joins the Shift the break started
+   *   from (ADR-0001), whichever arrives first.
    * - The segment's times are saved as sent, so an edit replaces them.
    * - A Shift not yet checked (`open` or `grace`) takes its times from its
-   *   segments, and once it has an end, its Grace Period is timed from that end.
-   *   An edit before the check moves the Grace Period with it.
+   *   segments and breaks, and once it has an end, its Grace Period is timed
+   *   from that end. An edit before the check moves the Grace Period with it.
    * - A Shift already checked (`submitted`, `reminded`, `escalated`, `too_late`) keeps its
    *   status and schedule: an edit never starts a second check.
    * - A Shift first known more than 24 hours after its recorded end is
@@ -101,9 +120,12 @@ export class WorkList {
     const a = w.activity;
     const known = await this.db
       .prepare(
-        `SELECT shift_id AS id, 0 AS rank FROM shift_segments WHERE time_activity_id = ?
+        `SELECT shift_id AS id, 0 AS rank FROM shift_segments WHERE time_activity_id = ?1
          UNION ALL
-         SELECT id, 1 AS rank FROM shifts WHERE user_id = ? AND start_at = ?
+         SELECT id, 1 AS rank FROM shifts WHERE user_id = ?2 AND start_at = ?3
+         UNION ALL
+         SELECT id, 2 AS rank FROM shifts
+         WHERE user_id = ?2 AND status NOT IN (${UNCHECKED}) AND start_at < ?3 AND ?3 < end_at
          ORDER BY rank LIMIT 1`,
       )
       .bind(a.id, w.userId, a.start.timestamp)
@@ -139,41 +161,155 @@ export class WorkList {
              start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, shift_segments.end_at)`,
         )
         .bind(a.id, shiftId, a.start.timestamp, endAt),
-      // Not yet checked: take the Shift's times from its segments.
+      ...this.#refreshTimes(shiftId, graceSeconds),
+    ]);
+    await this.#joinAcrossBreaks(w.userId, graceSeconds);
+  }
+
+  /**
+   * Record a manual break (#23): started, ended, added or edited. The Shift
+   * whose last segment ends exactly where it starts stays open while it's
+   * open, and ends at its end if no segment resumes there (ADR-0001). One
+   * atomic batch, and safe to repeat.
+   */
+  async recordBreak(w: BreakWrite, opts: { gracePeriodMinutes: number; now: number }): Promise<void> {
+    const a = w.activity;
+    const from = await this.#shiftEndingAt(w.userId, a.start.timestamp);
+    const graceSeconds = opts.gracePeriodMinutes * 60;
+    await this.db.batch([
+      this.#delivery(w, opts.now),
+      this.db
+        .prepare(
+          `INSERT INTO manual_breaks (time_activity_id, user_id, start_at, end_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT (time_activity_id) DO UPDATE SET
+             start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, manual_breaks.end_at)`,
+        )
+        .bind(a.id, w.userId, a.start.timestamp, a.end?.timestamp ?? null),
+      ...(from ? this.#refreshTimes(from, graceSeconds) : []),
+    ]);
+    await this.#joinAcrossBreaks(w.userId, graceSeconds);
+  }
+
+  /**
+   * A manual break was deleted: the Shift it started from no longer runs
+   * through it. A break never recorded changes nothing.
+   */
+  async deleteBreak(
+    d: { dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string },
+    opts: { gracePeriodMinutes: number; now: number },
+  ): Promise<void> {
+    const known = await this.db
+      .prepare("SELECT user_id, start_at FROM manual_breaks WHERE time_activity_id = ?")
+      .bind(d.timeActivityId)
+      .first<{ user_id: number; start_at: number }>();
+    const from = known ? await this.#shiftEndingAt(known.user_id, known.start_at) : null;
+    await this.db.batch([
+      this.#delivery(d, opts.now),
+      this.db.prepare("DELETE FROM manual_breaks WHERE time_activity_id = ?").bind(d.timeActivityId),
+      ...(from ? this.#refreshTimes(from, opts.gracePeriodMinutes * 60) : []),
+    ]);
+  }
+
+  /** The user's Shift with a segment ending exactly at `at`, or `null`. */
+  async #shiftEndingAt(userId: number, at: number): Promise<string | null> {
+    const r = await this.db
+      .prepare(
+        `SELECT ss.shift_id FROM shift_segments ss JOIN shifts s ON s.id = ss.shift_id
+         WHERE s.user_id = ? AND ss.end_at = ? LIMIT 1`,
+      )
+      .bind(userId, at)
+      .first<{ shift_id: string }>();
+    return r?.shift_id ?? null;
+  }
+
+  /**
+   * Join Shifts across the user's manual breaks (ADR-0001): a Shift with a
+   * segment starting exactly where a break ends belongs to the Shift with a
+   * segment ending exactly where that break starts. Deliveries can arrive in
+   * any order, so this runs after every write. Only a Shift not yet checked is
+   * folded in; it has had no sends, so nothing hangs off its row.
+   */
+  async #joinAcrossBreaks(userId: number, graceSeconds: number): Promise<void> {
+    for (let i = 0; i < MAX_JOINS; i++) {
+      const pair = await this.db
+        .prepare(
+          `SELECT before.shift_id AS keep, after.shift_id AS fold
+           FROM manual_breaks b
+           JOIN shift_segments before ON before.end_at = b.start_at
+           JOIN shifts kept ON kept.id = before.shift_id AND kept.user_id = b.user_id AND kept.deleted_at IS NULL
+           JOIN shift_segments after ON after.start_at = b.end_at
+           JOIN shifts folded ON folded.id = after.shift_id AND folded.user_id = b.user_id
+           WHERE b.user_id = ? AND folded.id != kept.id AND folded.status IN (${UNCHECKED})
+             AND folded.credited_submission_id IS NULL AND folded.deleted_at IS NULL
+           ORDER BY b.start_at LIMIT 1`,
+        )
+        .bind(userId)
+        .first<{ keep: string; fold: string }>();
+      if (!pair) return;
+      await this.db.batch([
+        this.db.prepare("UPDATE shift_segments SET shift_id = ? WHERE shift_id = ?").bind(pair.keep, pair.fold),
+        this.db.prepare("DELETE FROM shifts WHERE id = ?").bind(pair.fold),
+        ...this.#refreshTimes(pair.keep, graceSeconds),
+      ]);
+    }
+  }
+
+  /**
+   * A Shift not yet checked takes its times from its segments and breaks
+   * (ADR-0001): it starts at its first clock-in, and it ends
+   *  - never while a segment is open, or while a break it ran into is open;
+   *  - at the end of a break its last segment ran into, when nothing resumed;
+   *  - otherwise at its last segment's end.
+   * Once it has an end, its Grace Period is timed from that end; a Shift
+   * already in its Grace Period keeps the length it was given. One that loses
+   * its end (a break started) is open again, with nothing due.
+   */
+  #refreshTimes(shiftId: string, graceSeconds: number): D1PreparedStatement[] {
+    const grace = `CASE WHEN shifts.status = 'grace' THEN shifts.grace_ends_at - shifts.end_at ELSE ?2 END`;
+    return [
       this.db
         .prepare(
           `UPDATE shifts SET start_at = s.start_at
            FROM (SELECT MIN(start_at) AS start_at FROM shift_segments WHERE shift_id = ?1) AS s
-           WHERE shifts.id = ?1 AND shifts.status IN ('open', 'grace')`,
+           WHERE shifts.id = ?1 AND shifts.status IN (${UNCHECKED}) AND s.start_at IS NOT NULL`,
         )
         .bind(shiftId),
-      // ...and once it has an end, time the Grace Period from it. A Shift
-      // already in its Grace Period keeps the length it was given.
       this.db
         .prepare(
           `UPDATE shifts SET
-             end_at = s.end_at,
-             grace_ends_at = s.end_at + CASE WHEN shifts.status = 'grace' THEN shifts.grace_ends_at - shifts.end_at ELSE ?2 END,
-             due_at = CASE WHEN shifts.created_at - s.end_at > ?3 THEN NULL
-                           ELSE s.end_at + CASE WHEN shifts.status = 'grace' THEN shifts.grace_ends_at - shifts.end_at ELSE ?2 END END,
-             status = CASE WHEN shifts.created_at - s.end_at > ?3 THEN 'too_late' ELSE 'grace' END
-           FROM (SELECT MAX(end_at) AS end_at FROM shift_segments WHERE shift_id = ?1) AS s
-           WHERE shifts.id = ?1 AND shifts.status IN ('open', 'grace') AND s.end_at IS NOT NULL`,
+             end_at = r.end_at,
+             grace_ends_at = r.end_at + ${grace},
+             due_at = CASE WHEN r.end_at IS NULL OR shifts.created_at - r.end_at > ?3 THEN NULL ELSE r.end_at + ${grace} END,
+             status = CASE WHEN r.end_at IS NULL THEN 'open' WHEN shifts.created_at - r.end_at > ?3 THEN 'too_late' ELSE 'grace' END
+           FROM (
+             SELECT CASE
+                      WHEN EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = ?1 AND end_at IS NULL) THEN NULL
+                      WHEN b.time_activity_id IS NOT NULL THEN b.end_at
+                      ELSE seg.last_end END AS end_at
+             FROM (SELECT MAX(end_at) AS last_end FROM shift_segments WHERE shift_id = ?1) AS seg
+             LEFT JOIN manual_breaks b
+               ON b.start_at = seg.last_end AND b.user_id = (SELECT user_id FROM shifts WHERE id = ?1)
+           ) AS r
+           WHERE shifts.id = ?1 AND shifts.status IN (${UNCHECKED})
+             AND EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = ?1)`,
         )
         .bind(shiftId, graceSeconds, BACKFILL_CUTOFF_SECONDS),
-    ]);
+    ];
   }
 
   /**
    * A Shift Segment was deleted (`admin_delete`, or an approved delete
-   * request). Once a Shift has no segments left, its pending steps are
-   * cancelled: the cron skips it while `deleted_at` is set. A segment that
-   * was never recorded changes nothing.
+   * request). A Shift not yet checked takes its times from the segments left
+   * (a geofence approval's recreated record may be the only one closed). Once
+   * a Shift has no segments left, its pending steps are cancelled: the cron
+   * skips it while `deleted_at` is set. A segment that was never recorded
+   * changes nothing.
    */
   async deleteSegment(
     d: { dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string },
-    now: number,
+    opts: { gracePeriodMinutes: number; now: number },
   ): Promise<void> {
+    const now = opts.now;
     const known = await this.db
       .prepare("SELECT shift_id FROM shift_segments WHERE time_activity_id = ?")
       .bind(d.timeActivityId)
@@ -185,6 +321,7 @@ export class WorkList {
     await this.db.batch([
       this.#delivery(d, now),
       this.db.prepare("DELETE FROM shift_segments WHERE time_activity_id = ?").bind(d.timeActivityId),
+      ...this.#refreshTimes(known.shift_id, opts.gracePeriodMinutes * 60),
       this.db
         .prepare(
           `UPDATE shifts SET deleted_at = ?
