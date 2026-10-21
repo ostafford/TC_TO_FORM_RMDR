@@ -39,6 +39,36 @@ const LEASE_SECONDS = 5 * 60;
 /** The statuses of a Shift that still needs a form. */
 const NEEDS_FORM = "'open', 'grace', 'reminded', 'escalated'";
 
+/** Open Reminder Tasks are re-checked this often after the Escalation. */
+export const TASK_RECHECK_SECONDS = 60 * 60;
+
+/** A Reminder Task still open this long after its Shift ended is deleted. */
+export const TASK_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
+
+/** A Reminder Task with a step still to do: not created yet, or open. */
+const TASK_ACTIVE = "'pending', 'open'";
+
+/**
+ * An open Reminder Task's next step, read from its Shift as it is when the row
+ * is written (`?1` is now, `?2` the Shift's id), so a credit, delete or
+ * Escalation that lands mid-step is never overwritten: at once if the Shift was
+ * credited or deleted, hourly once escalated, otherwise the 7-day deletion.
+ */
+const TASK_NEXT_DUE = `(SELECT CASE
+    WHEN s.deleted_at IS NOT NULL OR s.status = 'submitted' THEN ?1
+    WHEN s.status = 'escalated' THEN MIN(?1 + ${TASK_RECHECK_SECONDS}, s.end_at + ${TASK_LIFETIME_SECONDS})
+    ELSE s.end_at + ${TASK_LIFETIME_SECONDS} END
+  FROM shifts s WHERE s.id = ?2)`;
+
+export interface ReminderTaskRow {
+  shiftId: string;
+  boardId: string;
+  /** `null` until created; then its id and the fields the close `PUT` sends again. */
+  task: { id: string; title: string; userIds: number[]; description: string } | null;
+  /** The task's Shift as it is now, deleted or not. */
+  shift: ShiftRow & { deleted: boolean };
+}
+
 /** A Shift first known more than this long after its recorded end is never checked. */
 export const BACKFILL_CUTOFF_SECONDS = 24 * 60 * 60;
 
@@ -161,6 +191,14 @@ export class WorkList {
            WHERE id = ? AND NOT EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = shifts.id)`,
         )
         .bind(now, known.shift_id),
+      // A deleted Shift's Reminder Task is deleted at once (or never created).
+      this.db
+        .prepare(
+          `UPDATE reminder_tasks SET due_at = ?1
+           WHERE shift_id = ?2 AND state IN (${TASK_ACTIVE})
+             AND EXISTS (SELECT 1 FROM shifts WHERE id = ?2 AND deleted_at IS NOT NULL)`,
+        )
+        .bind(now, known.shift_id),
     ]);
   }
 
@@ -230,17 +268,26 @@ export class WorkList {
    * Credit a submission to a Shift: it's submitted, and nothing more is due
    * (no Reminder, no Escalation). Returns `false`, changing nothing, when the
    * Shift no longer needs a form or the submission already counts for another.
+   * Its Reminder Task, if any, is due `now` to be closed.
    */
-  async credit(shiftId: string, formSubmissionId: string): Promise<boolean> {
-    const r = await this.db
-      .prepare(
-        `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?1
-         WHERE id = ?2 AND status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL
-           AND NOT EXISTS (SELECT 1 FROM shifts WHERE credited_submission_id = ?1)`,
-      )
-      .bind(formSubmissionId, shiftId)
-      .run();
-    return r.meta.changes === 1;
+  async credit(shiftId: string, formSubmissionId: string, now: number): Promise<boolean> {
+    const [r] = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?1
+           WHERE id = ?2 AND status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM shifts WHERE credited_submission_id = ?1)`,
+        )
+        .bind(formSubmissionId, shiftId),
+      this.db
+        .prepare(
+          `UPDATE reminder_tasks SET due_at = ?1
+           WHERE shift_id = ?2 AND state IN (${TASK_ACTIVE})
+             AND EXISTS (SELECT 1 FROM shifts WHERE id = ?2 AND credited_submission_id = ?3)`,
+        )
+        .bind(now, shiftId, formSubmissionId),
+    ]);
+    return r!.meta.changes === 1;
   }
 
   /**
@@ -271,9 +318,16 @@ export class WorkList {
 
   /**
    * The Reminder went out (`outcome === "ok"`): mark its claim done, and make
-   * the escalation point due `escalateAt`.
+   * the escalation point due `escalateAt`. With the Reminder Task on, its
+   * creation is due at once, on the board set now.
    */
-  async markReminded(shiftId: string, claimKey: string, now: number, escalateAt: number): Promise<void> {
+  async markReminded(
+    shiftId: string,
+    claimKey: string,
+    now: number,
+    escalateAt: number,
+    reminderTask: { boardId: string } | null,
+  ): Promise<void> {
     await this.db.batch([
       this.#sendDone(claimKey, now),
       this.db
@@ -282,6 +336,16 @@ export class WorkList {
           "UPDATE shifts SET status = 'reminded', reminded_at = ?, due_at = ?, lease_until = NULL WHERE id = ? AND status = 'grace'",
         )
         .bind(now, escalateAt, shiftId),
+      ...(reminderTask
+        ? [
+            this.db
+              .prepare(
+                `INSERT OR IGNORE INTO reminder_tasks (shift_id, board_id, state, due_at, created_at)
+                 SELECT id, ?, 'pending', ?, ? FROM shifts WHERE id = ? AND status = 'reminded'`,
+              )
+              .bind(reminderTask.boardId, now, now, shiftId),
+          ]
+        : []),
     ]);
   }
 
@@ -290,12 +354,109 @@ export class WorkList {
     await this.#sendDone(claimKey, now).run();
   }
 
-  /** Every Escalation went out: nothing more is due for this Shift. */
-  async markEscalated(shiftId: string): Promise<void> {
+  /**
+   * Every Escalation went out: nothing more is due for this Shift itself. Its
+   * open Reminder Task is re-checked hourly from now on.
+   */
+  async markEscalated(shiftId: string, now: number): Promise<void> {
+    await this.db.batch([
+      this.db
+        .prepare("UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL WHERE id = ? AND status = 'reminded'")
+        .bind(shiftId),
+      this.db
+        .prepare(
+          `UPDATE reminder_tasks SET due_at = MIN(COALESCE(due_at, ?1), ?1)
+           WHERE shift_id = ?2 AND state IN (${TASK_ACTIVE})
+             AND EXISTS (SELECT 1 FROM shifts WHERE id = ?2 AND status = 'escalated')`,
+        )
+        .bind(now + TASK_RECHECK_SECONDS, shiftId),
+    ]);
+  }
+
+  /**
+   * Lease up to `limit` Reminder Tasks whose next step is due, oldest due
+   * first, as {@link takeDue} does for Shifts. A deleted Shift's task is
+   * taken too: deleting it is its step.
+   */
+  async takeDueTasks(now: number, limit: number): Promise<ReminderTaskRow[]> {
+    const due = await this.db
+      .prepare(
+        `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, s.*
+         FROM reminder_tasks t JOIN shifts s ON s.id = t.shift_id
+         WHERE t.due_at <= ? AND (t.lease_until IS NULL OR t.lease_until <= ?)
+         ORDER BY t.due_at LIMIT ?`,
+      )
+      .bind(now, now, limit)
+      .all<Record<string, unknown>>();
+
+    const taken: ReminderTaskRow[] = [];
+    for (const r of due.results) {
+      const lease = await this.db
+        .prepare("UPDATE reminder_tasks SET lease_until = ? WHERE shift_id = ? AND (lease_until IS NULL OR lease_until <= ?)")
+        .bind(now + LEASE_SECONDS, r.id, now)
+        .run();
+      if (lease.meta.changes !== 1) continue;
+      taken.push({
+        shiftId: String(r.id),
+        boardId: String(r.board_id),
+        task:
+          r.task_id === null
+            ? null
+            : {
+                id: String(r.task_id),
+                title: String(r.title),
+                userIds: JSON.parse(String(r.user_ids)) as number[],
+                description: String(r.description ?? ""),
+              },
+        shift: { ...toShift(r), deleted: r.deleted_at !== null },
+      });
+    }
+    return taken;
+  }
+
+  /**
+   * The Reminder Task was created (`outcome === "ok"`): store its id, title,
+   * users and description with its claim marked done, in one batch, so no
+   * later run can create a second.
+   */
+  async markTaskCreated(
+    shiftId: string,
+    claimKey: string,
+    task: { id: string; title: string; userIds: number[]; description: string },
+    now: number,
+  ): Promise<void> {
+    await this.db.batch([
+      this.#sendDone(claimKey, now),
+      this.db
+        .prepare(
+          `UPDATE reminder_tasks SET
+             task_id = ?3, title = ?4, user_ids = ?5, description = ?6, state = 'open', lease_until = NULL,
+             due_at = ${TASK_NEXT_DUE}
+           WHERE shift_id = ?2`,
+        )
+        .bind(now, shiftId, task.id, task.title, JSON.stringify(task.userIds), task.description),
+    ]);
+  }
+
+  /** The Reminder Task has nothing more to do. */
+  async finishTask(shiftId: string, state: "completed" | "deleted" | "skipped"): Promise<void> {
     await this.db
-      .prepare("UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL WHERE id = ? AND status = 'reminded'")
-      .bind(shiftId)
+      .prepare("UPDATE reminder_tasks SET state = ?, due_at = NULL, lease_until = NULL WHERE shift_id = ?")
+      .bind(state, shiftId)
       .run();
+  }
+
+  /** Nothing to do for the open Reminder Task yet: schedule its next step. */
+  async rescheduleTask(shiftId: string, now: number): Promise<void> {
+    await this.db
+      .prepare(`UPDATE reminder_tasks SET lease_until = NULL, due_at = ${TASK_NEXT_DUE} WHERE shift_id = ?2`)
+      .bind(now, shiftId)
+      .run();
+  }
+
+  /** Let the next run try this Reminder Task again. */
+  async releaseTask(shiftId: string): Promise<void> {
+    await this.db.prepare("UPDATE reminder_tasks SET lease_until = NULL WHERE shift_id = ?").bind(shiftId).run();
   }
 
   #sendDone(claimKey: string, now: number): D1PreparedStatement {

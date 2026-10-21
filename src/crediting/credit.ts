@@ -11,18 +11,22 @@ import { chooseShift, type CreditRules } from "./choose.js";
 /** How often to choose again after losing a race to another credit. */
 const ATTEMPTS = 3;
 
-/** The Shift the submission counts for (just now, or already), or `null` when none needs it. */
+/**
+ * The Shift the submission counts for (just now, or already), or `null` when
+ * none needs it. A Shift credited just now has its Reminder Task due `now`.
+ */
 export async function creditSubmission(
   store: WorkList,
   submission: FormSubmission,
   rules: CreditRules,
+  now: number,
 ): Promise<string | null> {
   for (let i = 0; i < ATTEMPTS; i++) {
     const already = await store.creditedTo(submission.formSubmissionId);
     if (already) return already;
     const target = chooseShift(submission, await store.creditCandidates(submission.submittingUserId), rules);
     if (!target) return null;
-    if (await store.credit(target, submission.formSubmissionId)) return target;
+    if (await store.credit(target, submission.formSubmissionId, now)) return target;
   }
   return null;
 }

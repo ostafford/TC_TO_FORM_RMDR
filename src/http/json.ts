@@ -1,7 +1,7 @@
 /*
  * Copied from EH_Webhook (~/IDP/EH_Webhook/src/http/json.ts at 0c5ec92),
- * unchanged apart from this note. Never import it from the sibling project:
- * this repo installs on its own (spec #19, user story 71).
+ * with DELETE added for Reminder Tasks (#27). Never import it from the
+ * sibling project: this repo installs on its own (spec #19, user story 71).
  */
 /**
  * One JSON-over-HTTP call, with the response sorted into the four buckets every
@@ -9,7 +9,7 @@
  * Connecteam clients. `fetchImpl` is injectable for tests.
  */
 export interface HttpRequest {
-  method: "GET" | "POST" | "PUT";
+  method: "GET" | "POST" | "PUT" | "DELETE";
   url: string;
   headers?: Record<string, string>;
   body?: unknown;

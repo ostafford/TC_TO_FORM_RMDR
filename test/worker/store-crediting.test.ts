@@ -33,19 +33,19 @@ beforeEach(async () => {
 
 describe("crediting in the store", () => {
   it("refuses to credit a submission already counted for another Shift", async () => {
-    expect(await store.credit("a", "s-1")).toBe(true);
-    expect(await store.credit("b", "s-1")).toBe(false);
+    expect(await store.credit("a", "s-1", 3_000_000)).toBe(true);
+    expect(await store.credit("b", "s-1", 3_000_000)).toBe(false);
     expect(await store.creditedTo("s-1")).toBe("a");
   });
 
   it("refuses to credit a Shift that already has a submission", async () => {
-    expect(await store.credit("a", "s-1")).toBe(true);
-    expect(await store.credit("a", "s-2")).toBe(false);
+    expect(await store.credit("a", "s-1", 3_000_000)).toBe(true);
+    expect(await store.credit("a", "s-2", 3_000_000)).toBe(false);
   });
 
   it("reports where a submission already counts, without moving it", async () => {
     const s = { formSubmissionId: "s-1", formId: 9001, submittingUserId: 501, submissionTimestamp: 2_000_100 };
-    expect(await creditSubmission(store, s, rules)).toBe("b");
-    expect(await creditSubmission(store, { ...s, submissionTimestamp: 1_000_100 }, rules)).toBe("b");
+    expect(await creditSubmission(store, s, rules, 3_000_000)).toBe("b");
+    expect(await creditSubmission(store, { ...s, submissionTimestamp: 1_000_100 }, rules, 3_000_000)).toBe("b");
   });
 });

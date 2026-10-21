@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { reminderShiftEnded, type ReminderInput } from "../src/messages/reminder.js";
 import { formatDuration, formatShift, MAX_MESSAGE } from "../src/messages/format.js";
+import { reminderTaskDescription, reminderTaskTitle, type ReminderTaskInput } from "../src/messages/reminderTask.js";
 
 // Mon 20 Oct 2026, 9:00 am to 5:02 pm in Sydney (AEDT, UTC+11).
 const SYD_9AM = Date.UTC(2026, 9, 19, 22, 0) / 1000;
@@ -44,6 +45,37 @@ describe("Reminder (Shift ended)", () => {
     expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
     // Long names are cut, not the closing sentence that states the escalation delay.
     expect(text).toMatch(/still missing in 4 hours\.$/);
+  });
+});
+
+describe("Reminder Task", () => {
+  const task: ReminderTaskInput = {
+    shift: sample.shift,
+    deploymentZone: sample.deploymentZone,
+    formName: sample.formName,
+    whereToFind: sample.whereToFind,
+  };
+
+  it("reads as the variant D wording", () => {
+    expect(reminderTaskTitle(task)).toBe("Daily Safety Checklist – Tue 20 Oct");
+    expect(reminderTaskDescription(task)).toBe(
+      "Shift: Tue 20 Oct, 9:00 am – 5:02 pm\n" +
+        "Where: the Forms tab in the Connecteam app\n\n" +
+        "Closes automatically when the form is received. Ticking it does not count as submitting.",
+    );
+  });
+
+  it("names the Shift's day in the zone it was recorded in, with the short name only when it differs", () => {
+    const perth = { ...task, shift: { ...task.shift, timeZone: "Australia/Perth" } };
+    expect(reminderTaskTitle(perth)).toBe("Daily Safety Checklist – Tue 20 Oct");
+    expect(reminderTaskDescription(perth)).toMatch(/^Shift: Tue 20 Oct, 6:00 am – 2:02 pm \(AWST\)\n/);
+  });
+
+  it("cuts long names, keeping the Shift's day and the closing sentence", () => {
+    const longer = { ...task, formName: long(400), whereToFind: long(400) };
+    expect(reminderTaskTitle(longer)).toMatch(/^W{99}… – Tue 20 Oct$/);
+    expect(reminderTaskDescription(longer).length).toBeLessThanOrEqual(MAX_MESSAGE);
+    expect(reminderTaskDescription(longer)).toMatch(/Ticking it does not count as submitting\.$/);
   });
 });
 

@@ -4,15 +4,17 @@
  *  - the end of the Grace Period: one `form-submissions` check, then the
  *    Reminder if nothing arrived;
  *  - the escalation point, the escalation delay after the Reminder: the check
- *    again, then an Escalation to each recipient if still nothing.
+ *    again, then an Escalation to each recipient if still nothing;
+ * then each Reminder Task step that is due (./reminderTask.ts).
  */
 import type { ConnecteamClient } from "../connecteam/client.js";
-import { creditSubmission } from "../crediting/credit.js";
-import { creditRules, type Settings } from "../env.js";
+import { submittedFor } from "../crediting/check.js";
+import type { Settings } from "../env.js";
 import { escalationRecipients } from "../escalation/recipients.js";
 import { escalation } from "../messages/escalation.js";
 import { reminderShiftEnded } from "../messages/reminder.js";
 import type { ShiftRow, WorkList } from "../store.js";
+import { runTaskSteps, type TaskStepResult } from "./reminderTask.js";
 
 export interface DueStepDeps {
   store: WorkList;
@@ -28,7 +30,9 @@ const BATCH = 25;
 
 export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "skipped";
 
-export async function runDueSteps(deps: DueStepDeps): Promise<Record<StepResult, number>> {
+export async function runDueSteps(
+  deps: DueStepDeps,
+): Promise<Record<StepResult, number> & { tasks: Record<TaskStepResult, number> }> {
   const counts: Record<StepResult, number> = { submitted: 0, reminded: 0, escalated: 0, retry: 0, skipped: 0 };
   for (const shift of await deps.store.takeDue(deps.now, BATCH)) {
     const result =
@@ -39,7 +43,8 @@ export async function runDueSteps(deps: DueStepDeps): Promise<Record<StepResult,
           : await skip(shift, deps);
     counts[result]++;
   }
-  return counts;
+  // After the Shifts, so a task due from this run's Reminder is created alongside it.
+  return { ...counts, tasks: await runTaskSteps(deps) };
 }
 
 async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
@@ -48,24 +53,14 @@ async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
 }
 
 /**
- * Did they submit between the Shift's first clock-in and `toSeconds`? Each
- * submission in the window not yet credited elsewhere goes through the
- * crediting order (#26), which may credit it to another Shift instead.
- * Returns a result to stop with, or `null` when nothing counts for this Shift.
+ * Did they submit between the Shift's first clock-in and `toSeconds`
+ * (../crediting/check.ts)? Returns a result to stop with, or `null` when
+ * nothing counts for this Shift.
  */
 async function checkSubmitted(shift: ShiftRow, toSeconds: number, step: string, deps: DueStepDeps): Promise<StepResult | null> {
-  for (const formId of shift.formIds) {
-    const found = await deps.ct.listFormSubmissions(formId, {
-      userId: shift.userId,
-      fromSeconds: shift.startAt,
-      toSeconds,
-    });
-    if (found.outcome !== "ok") return retry(shift, deps, { step, ...found });
-    for (const submission of found.data) {
-      if ((await creditSubmission(deps.store, submission, creditRules(deps.settings))) === shift.id) return "submitted";
-    }
-  }
-  return null;
+  const found = await submittedFor(shift, toSeconds, deps);
+  if (found.outcome !== "ok") return retry(shift, deps, { step, ...found });
+  return found.data ? "submitted" : null;
 }
 
 async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
@@ -89,7 +84,7 @@ async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<Ste
     // Never send twice. A done claim means it already went out; a held one is
     // either another run mid-send or a run that died (alerting on that is #33).
     if ((await store.sendState(claimKey)) === "done") {
-      await store.markReminded(shift.id, claimKey, now, escalateAt);
+      await store.markReminded(shift.id, claimKey, now, escalateAt, settings.reminderTask);
       return "reminded";
     }
     await store.release(shift.id);
@@ -110,7 +105,7 @@ async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<Ste
     await store.releaseSend(claimKey);
     return retry(shift, deps, { step: "reminder", ...sent });
   }
-  await store.markReminded(shift.id, claimKey, now, escalateAt);
+  await store.markReminded(shift.id, claimKey, now, escalateAt, settings.reminderTask);
   return "reminded";
 }
 
@@ -171,7 +166,7 @@ async function escalationPoint(shift: ShiftRow, deps: DueStepDeps): Promise<Step
   }
 
   if (owed > 0) return retry(shift, deps, { step: "escalation", owed });
-  await store.markEscalated(shift.id);
+  await store.markEscalated(shift.id, now);
   return "escalated";
 }
 
