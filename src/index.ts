@@ -68,18 +68,25 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
         await store.recordDelivery(delivery, now);
         return json(200, { ok: true });
       }
-      if (delivery.kind === "deleted") {
-        await store.deleteSegment(delivery, now);
-        log({ evt: "webhook", status: 200, eventType: delivery.eventType, userId: delivery.userId });
-        return json(200, { ok: true });
-      }
-
       // The Grace Period and accepted forms are fixed for the Shift when its end
       // is recorded, so a later settings change doesn't move a scheduled step.
       const settings = readSettings(env);
       if (!settings.ok) {
         log({ evt: "webhook", status: 500, problems: settings.problems });
         return json(500, { error: "settings incomplete" });
+      }
+      if (delivery.kind === "deleted") {
+        await store.deleteSegment(delivery, { gracePeriodMinutes: settings.settings.gracePeriodMinutes, now });
+        log({ evt: "webhook", status: 200, eventType: delivery.eventType, userId: delivery.userId });
+        return json(200, { ok: true });
+      }
+      // A manual break moves the end of the Shift it started from (#23, ADR-0001).
+      if (delivery.kind === "break" || delivery.kind === "breakDeleted") {
+        const opts = { gracePeriodMinutes: settings.settings.gracePeriodMinutes, now };
+        if (delivery.kind === "break") await store.recordBreak(delivery, opts);
+        else await store.deleteBreak(delivery, opts);
+        log({ evt: "webhook", status: 200, eventType: delivery.eventType, userId: delivery.userId, manualBreak: true });
+        return json(200, { ok: true });
       }
       await store.recordSegment(delivery, {
         formIds: [settings.settings.complianceFormId],

@@ -12,7 +12,7 @@ export const PUBLISHER_ID = 4242;
 
 export async function resetDb(): Promise<void> {
   await env.DB.batch(
-    ["send_claims", "reminder_tasks", "shift_segments", "shifts", "webhook_deliveries"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
+    ["send_claims", "reminder_tasks", "shift_segments", "shifts", "manual_breaks", "webhook_deliveries"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
   );
 }
 
@@ -87,6 +87,40 @@ export function timeActivity(opts: {
       ...(opts.isAutoClockOut !== undefined ? { isAutoClockOut: opts.isAutoClockOut } : {}),
       jobId: "job-1",
       shiftAttachments: [],
+    },
+  };
+}
+
+/**
+ * A manual break delivery as Connecteam sends it (tested live 2026-10-21, #23):
+ * the ordinary events with `activityType: "manual_break"` and the break type's
+ * `manualBreakId`. Like any payload, it shows the record as it is when sent, so
+ * a `clock_in` may already carry `end`.
+ */
+export function manualBreak(opts: {
+  eventType: "clock_in" | "clock_out" | string;
+  userId: number;
+  id: string;
+  start: number;
+  end?: number;
+  timezone?: string;
+}) {
+  const timezone = opts.timezone ?? "Australia/Sydney";
+  return {
+    requestId: `req-${++requests}`,
+    company: "demo",
+    eventTimestamp: opts.eventType === "clock_in" ? opts.start : (opts.end ?? opts.start),
+    webhookVersion: 1,
+    userId: opts.userId,
+    timeClockId: 67,
+    activityType: "manual_break",
+    eventType: opts.eventType,
+    timeActivity: {
+      id: opts.id,
+      start: { timestamp: opts.start, timezone },
+      ...(opts.end !== undefined ? { end: { timestamp: opts.end, timezone } } : {}),
+      manualBreakId: "lunch-break",
+      isAutoClockOut: false,
     },
   };
 }

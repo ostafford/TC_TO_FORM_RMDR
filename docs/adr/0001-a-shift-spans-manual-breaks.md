@@ -10,3 +10,5 @@ Connecteam ends the open record when a manual break starts and opens a new one, 
 ## Consequences
 
 The join is by timestamps only: nothing in the data links a break to its Shift Segments by id. A break an admin adds later splits a finished record into new ids, so the state must map those back to the Shift already checked rather than start a second check.
+
+The webhook announces a break only through ordinary events (tested live 2026-10-21, #23). Starting one sends the segment's plain `clock_out`, indistinguishable from a real clock-out, then a `clock_in` with `activityType: "manual_break"`. So the integration records `manual_break` deliveries and re-decides a Shift's end after each one, rather than trusting the first `clock_out`. A break an admin adds later sends only the split's `admin_edit` and `admin_add`, nothing for the break, so a new record starting inside a Shift already checked maps back to it by time.
