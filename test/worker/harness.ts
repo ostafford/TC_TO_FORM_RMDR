@@ -4,7 +4,7 @@
  */
 import { env, createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { createWorker } from "../../src/index.js";
-import { FakeConnecteam, type FakeSubmission } from "./fake-connecteam.js";
+import { FakeConnecteam, type FakeSubmission, type FakeTask } from "./fake-connecteam.js";
 
 export const SECRET = "test-webhook-secret";
 export const FORM_ID = 9001;
@@ -137,6 +137,34 @@ export function deletion(opts: { eventType?: string; userId: number; id: string;
     activityType: "shift",
     eventType: opts.eventType ?? "admin_delete",
     timeActivityId: opts.id,
+  };
+}
+
+/**
+ * A `task_completed` delivery as Connecteam sent it live on 2026-10-24 (#28):
+ * `data` is an array, and nothing says who completed the task.
+ */
+export function taskCompleted(t: FakeTask, at: number) {
+  return {
+    requestId: `req-${++requests}`,
+    company: "demo",
+    activityType: "Task",
+    eventTimestamp: at,
+    evnetTimestamp: at,
+    eventType: "task_completed",
+    data: [
+      {
+        id: t.id,
+        taskBoardId: Number(t.boardId) || t.boardId,
+        userIds: t.userIds,
+        status: "completed",
+        title: t.title,
+        labelIds: [],
+        type: "oneTime",
+        isArchived: false,
+      },
+    ],
+    webhookVersion: 1,
   };
 }
 

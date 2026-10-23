@@ -3,7 +3,8 @@
  * and answers like the API does: users (by id, or every active user paged),
  * forms, form submissions filtered by
  * user and an inclusive submitted-time window, DMs, and Quick Tasks (create,
- * a full-replace update, delete; 404 for a task that isn't there). A scripted reply
+ * a full-replace update, delete; 404 for a task that never existed, and a
+ * `PUT` on a deleted one answers 200 and changes nothing, as live). A scripted reply
  * (`failNext`) answers the next matching call instead.
  */
 export interface RecordedCall {
@@ -58,6 +59,7 @@ export class FakeConnecteam {
   readonly submissions: FakeSubmission[] = [];
   /** Quick Tasks that exist now, by id. */
   readonly tasks = new Map<string, FakeTask>();
+  readonly #deletedTasks = new Set<string>();
   #nextTask = 0;
   readonly #scripted: Array<{ method: string; pathPrefix: string; status: number }> = [];
   /** Runs while a DM is being sent, before it's answered: for racing a webhook against a send. */
@@ -178,8 +180,12 @@ export class FakeConnecteam {
     if (task && (method === "PUT" || method === "DELETE")) {
       const boardId = decodeURIComponent(task[1]!);
       const id = decodeURIComponent(task[2]!);
+      if (method === "PUT" && this.#deletedTasks.has(id)) return json(200, { requestId: "r", data: body });
       if (this.tasks.get(id)?.boardId !== boardId) return json(404, { detail: "Task not found" });
-      if (method === "DELETE") this.tasks.delete(id);
+      if (method === "DELETE") {
+        this.tasks.delete(id);
+        this.#deletedTasks.add(id);
+      }
       // A full replace: whatever isn't sent again is gone.
       else this.tasks.set(id, { ...(body as Omit<FakeTask, "id" | "boardId">), id, boardId });
       return json(200, { requestId: "r", data: {} });

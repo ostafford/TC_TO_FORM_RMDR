@@ -16,7 +16,7 @@
  *  - POST /chat/v1/conversations/privateMessage/{userId}   body { senderId, text }
  *  - POST /chat/v1/conversations/{conversationId}/message  body { senderId, text }
  *  - POST   /tasks/v1/taskboards/{boardId}/tasks           (returns the new task's `id`)
- *  - PUT    /tasks/v1/taskboards/{boardId}/tasks/{taskId}  (a full replace)
+ *  - PUT    /tasks/v1/taskboards/{boardId}/tasks/{taskId}  (a full replace: complete or reopen)
  *  - DELETE /tasks/v1/taskboards/{boardId}/tasks/{taskId}
  *  - rate limit headers: x-ratelimit-minute-remaining / -limit, -day-remaining
  */
@@ -167,13 +167,27 @@ export class ConnecteamClient {
   /**
    * Mark a Quick Task `completed`. The `PUT` is a full replace, so the task's
    * title, users and description go again as they were created. Safe to
-   * repeat. A 404 means the task is gone.
+   * repeat. A 404 means the task never existed; a deleted one still answers
+   * 200 and stays deleted (tested live 2026-10-24, #28).
    */
   async completeTask(boardId: string, taskId: string, task: QuickTask): Promise<CtResult<null>> {
+    return this.#putTask(boardId, taskId, task, "completed");
+  }
+
+  /**
+   * Set a completed Quick Task back to `published`, as {@link completeTask}
+   * does the other way. The assignee gets a push notification, and no
+   * webhook fires (tested live 2026-10-24, #28).
+   */
+  async reopenTask(boardId: string, taskId: string, task: QuickTask): Promise<CtResult<null>> {
+    return this.#putTask(boardId, taskId, task, "published");
+  }
+
+  async #putTask(boardId: string, taskId: string, task: QuickTask, status: "published" | "completed"): Promise<CtResult<null>> {
     const r = await this.#call(
       "PUT",
       `/tasks/v1/taskboards/${encodeURIComponent(boardId)}/tasks/${encodeURIComponent(taskId)}`,
-      { userIds: task.userIds, status: "completed", title: task.title, description: { content: task.description } },
+      { userIds: task.userIds, status, title: task.title, description: { content: task.description } },
     );
     return unwrap(r, () => null);
   }

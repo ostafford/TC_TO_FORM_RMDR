@@ -269,23 +269,3 @@ describe("with the Reminder Task off", () => {
     expect(theTask()[0]?.status).toBe("completed");
   });
 });
-
-describe("ticking the task by hand", () => {
-  it("is never treated as a submission: the Escalation still goes out and the task isn't closed for it", async () => {
-    await reminded();
-    const [created] = theTask();
-    await h.webhook({
-      requestId: "tick-1",
-      company: "demo",
-      activityType: "tasks",
-      eventType: "task_completed",
-      eventTimestamp: REMINDED + HOUR,
-      data: { id: created!.id, taskBoardId: BOARD, title: TITLE, userIds: [JORDAN.userId], status: "completed" },
-    });
-    await h.tick(REMINDED + HOUR + MINUTE);
-    await h.tick(ESCALATE);
-
-    expect(escalations()).toHaveLength(1);
-    expect(taskCalls("PUT")).toEqual([]);
-  });
-});

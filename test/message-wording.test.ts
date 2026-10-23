@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { reminderShiftEnded, type ReminderInput } from "../src/messages/reminder.js";
 import { formatDuration, formatShift, MAX_MESSAGE } from "../src/messages/format.js";
-import { reminderTaskDescription, reminderTaskTitle, type ReminderTaskInput } from "../src/messages/reminderTask.js";
+import { reminderTaskDescription, reminderTaskTitle, tickDm, type ReminderTaskInput } from "../src/messages/reminderTask.js";
 
 // Mon 20 Oct 2026, 9:00 am to 5:02 pm in Sydney (AEDT, UTC+11).
 const SYD_9AM = Date.UTC(2026, 9, 19, 22, 0) / 1000;
@@ -76,6 +76,43 @@ describe("Reminder Task", () => {
     expect(reminderTaskTitle(longer)).toMatch(/^W{99}… – Tue 20 Oct$/);
     expect(reminderTaskDescription(longer).length).toBeLessThanOrEqual(MAX_MESSAGE);
     expect(reminderTaskDescription(longer)).toMatch(/Ticking it does not count as submitting\.$/);
+  });
+});
+
+describe("tick DM", () => {
+  const tick = {
+    firstName: sample.firstName,
+    shift: sample.shift,
+    deploymentZone: sample.deploymentZone,
+    formName: sample.formName,
+    whereToFind: sample.whereToFind,
+  };
+
+  it("reads as the variant D wording", () => {
+    expect(tickDm(tick)).toBe(
+      "Hi Jordan 👋\n\n" +
+        "Thanks for ticking the task, but we haven't received your form yet.\n\n" +
+        "Shift: Tue 20 Oct, 9:00 am – 5:02 pm\n" +
+        "Form: Daily Safety Checklist\n" +
+        "Where: the Forms tab in the Connecteam app\n\n" +
+        "Ticking the task doesn't submit the form. The task has been reopened and ticks itself off once your form arrives.",
+    );
+  });
+
+  it("greets 'there' when the user has no first name", () => {
+    expect(tickDm({ ...tick, firstName: "" })).toMatch(/^Hi there 👋/);
+  });
+
+  it(`stays at or under ${MAX_MESSAGE} characters with long sample names, keeping the closing sentence`, () => {
+    const text = tickDm({
+      ...tick,
+      firstName: long(200),
+      formName: long(400),
+      whereToFind: long(400),
+      shift: { ...tick.shift, timeZone: "Australia/Perth" },
+    });
+    expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
+    expect(text).toMatch(/ticks itself off once your form arrives\.$/);
   });
 });
 

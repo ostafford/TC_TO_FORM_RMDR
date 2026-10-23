@@ -64,12 +64,13 @@ const TASK_ACTIVE = "'pending', 'open'";
 
 /**
  * An open Reminder Task's next step, read from its Shift as it is when the row
- * is written (`?1` is now, `?2` the Shift's id), so a credit, delete or
+ * is written (`?1` is now, `?2` the Shift's id), so a credit, delete, tick or
  * Escalation that lands mid-step is never overwritten: at once if the Shift was
- * credited or deleted, hourly once escalated, otherwise the 7-day deletion.
+ * credited or deleted or the task ticked, hourly once escalated, otherwise the
+ * 7-day deletion. Used only in an `UPDATE reminder_tasks`.
  */
 const TASK_NEXT_DUE = `(SELECT CASE
-    WHEN s.deleted_at IS NOT NULL OR s.status = 'submitted' THEN ?1
+    WHEN s.deleted_at IS NOT NULL OR s.status = 'submitted' OR reminder_tasks.tick = 'ticked' THEN ?1
     WHEN s.status = 'escalated' THEN MIN(?1 + ${TASK_RECHECK_SECONDS}, s.end_at + ${TASK_LIFETIME_SECONDS})
     ELSE s.end_at + ${TASK_LIFETIME_SECONDS} END
   FROM shifts s WHERE s.id = ?2)`;
@@ -79,6 +80,8 @@ export interface ReminderTaskRow {
   boardId: string;
   /** `null` until created; then its id and the fields the close `PUT` sends again. */
   task: { id: string; title: string; userIds: number[]; description: string } | null;
+  /** ticked: the employee ticked it without submitting, and reopening it is due. reopened: done once. */
+  tick: "ticked" | "reopened" | null;
   /** The task's Shift as it is now, deleted or not. */
   shift: ShiftRow & { deleted: boolean };
 }
@@ -518,7 +521,7 @@ export class WorkList {
   async takeDueTasks(now: number, limit: number): Promise<ReminderTaskRow[]> {
     const due = await this.db
       .prepare(
-        `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, s.*
+        `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, t.tick, s.*
          FROM reminder_tasks t JOIN shifts s ON s.id = t.shift_id
          WHERE t.due_at <= ? AND (t.lease_until IS NULL OR t.lease_until <= ?)
          ORDER BY t.due_at LIMIT ?`,
@@ -545,6 +548,7 @@ export class WorkList {
                 userIds: JSON.parse(String(r.user_ids)) as number[],
                 description: String(r.description ?? ""),
               },
+        tick: (r.tick as ReminderTaskRow["tick"]) ?? null,
         shift: { ...toShift(r), deleted: r.deleted_at !== null },
       });
     }
@@ -573,6 +577,50 @@ export class WorkList {
         )
         .bind(now, shiftId, task.id, task.title, JSON.stringify(task.userIds), task.description),
     ]);
+  }
+
+  /**
+   * A `task_completed` delivery (#28). An open Reminder Task ticked for the
+   * first time with no credited submission is due at once, to be reopened
+   * with the tick DM. A later tick, a tick after our own close (which sends
+   * no webhook anyway) or any other Quick Task changes nothing.
+   */
+  async recordTick(d: { dedupeKey: string; eventType: string; taskIds: string[] }, now: number): Promise<number> {
+    const results = await this.db.batch([
+      this.#delivery({ ...d, userId: null }, now),
+      ...d.taskIds.map((taskId) =>
+        this.db
+          .prepare(
+            `UPDATE reminder_tasks SET tick = 'ticked', due_at = ?1
+             WHERE task_id = ?2 AND state = 'open' AND tick IS NULL
+               AND EXISTS (SELECT 1 FROM shifts s WHERE s.id = reminder_tasks.shift_id
+                           AND s.deleted_at IS NULL AND s.credited_submission_id IS NULL)`,
+          )
+          .bind(now, taskId),
+      ),
+    ]);
+    return results.slice(1).reduce((n, r) => n + r.meta.changes, 0);
+  }
+
+  /** The ticked Reminder Task was reopened and the tick DM went out (`outcome === "ok"`). */
+  async markTickHandled(shiftId: string, claimKey: string, now: number): Promise<void> {
+    await this.db.batch([
+      this.#sendDone(claimKey, now),
+      this.db.prepare("UPDATE reminder_tasks SET tick = 'reopened' WHERE shift_id = ? AND tick = 'ticked'").bind(shiftId),
+      // A second statement: a `SET` reads the row as it was, so the next step must see the new tick.
+      this.db
+        .prepare(`UPDATE reminder_tasks SET lease_until = NULL, due_at = ${TASK_NEXT_DUE} WHERE shift_id = ?2`)
+        .bind(now, shiftId),
+    ]);
+  }
+
+  /** Whether the employee ever ticked this Shift's Reminder Task without submitting, for the Escalation. */
+  async taskTicked(shiftId: string): Promise<boolean> {
+    const r = await this.db
+      .prepare("SELECT 1 AS ticked FROM reminder_tasks WHERE shift_id = ? AND tick IS NOT NULL")
+      .bind(shiftId)
+      .first<{ ticked: number }>();
+    return r !== null;
   }
 
   /** The Reminder Task has nothing more to do. */
