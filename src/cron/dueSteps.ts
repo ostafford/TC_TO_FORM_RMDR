@@ -145,6 +145,7 @@ async function escalationPoint(shift: ShiftRow, deps: DueStepDeps): Promise<Step
     deploymentZone: settings.timeZone,
     formName: form.data.formName,
     remindedMinutesAgo: Math.floor((now - shift.remindedAt) / 60),
+    ticked: await store.taskTicked(shift.id),
   });
 
   let owed = 0;

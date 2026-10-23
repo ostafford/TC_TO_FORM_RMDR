@@ -9,6 +9,7 @@ import { creditSubmission } from "./crediting/credit.js";
 import { creditRules, readSettings, type Env } from "./env.js";
 import { WorkList } from "./store.js";
 import { isFormsDelivery, parseFormSubmissionDelivery } from "./webhook/formSubmission.js";
+import { isTaskDelivery, parseTaskDelivery } from "./webhook/task.js";
 import { parseTimeActivityDelivery } from "./webhook/timeActivity.js";
 
 export interface WorkerOptions {
@@ -58,6 +59,20 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
         // A late submission cancels the Escalation as soon as it arrives.
         const shiftId = await creditSubmission(store, form.submission, creditRules(settings.settings), now);
         log({ evt: "webhook", status: 200, eventType: form.eventType, userId: form.userId, creditedTo: shiftId });
+        return json(200, { ok: true });
+      }
+
+      if (isTaskDelivery(payload)) {
+        const task = parseTaskDelivery(payload);
+        if (task.kind === "malformed") return json(400, { error: "not a task delivery" });
+        if (task.kind === "ignored") {
+          await store.recordDelivery(task, now);
+          return json(200, { ok: true });
+        }
+        // An employee's tick, never a submission (#28): the cron reopens the task and sends the tick DM.
+        // It needs no settings, so a Reminder Task turned off since still finishes its lifecycle.
+        const ticked = await store.recordTick(task, now);
+        log({ evt: "webhook", status: 200, eventType: task.eventType, taskIds: task.taskIds, ticked });
         return json(200, { ok: true });
       }
 

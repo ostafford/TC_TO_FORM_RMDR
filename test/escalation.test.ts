@@ -15,6 +15,7 @@ const sample: EscalationInput = {
   deploymentZone: "Australia/Sydney",
   formName: "Daily Safety Checklist",
   remindedMinutesAgo: 240,
+  ticked: false,
 };
 
 describe("Escalation wording", () => {
@@ -25,6 +26,12 @@ describe("Escalation wording", () => {
         "Shift: Tue 20 Oct, 9:00 am – 5:02 pm\n" +
         "Form: Daily Safety Checklist\n" +
         "Reminded: 4 hours ago",
+    );
+  });
+
+  it("adds the note when the employee ticked the Reminder Task without submitting", () => {
+    expect(escalation({ ...sample, ticked: true })).toMatch(
+      /\nReminded: 4 hours ago\nNote: ticked the reminder task without submitting$/,
     );
   });
 
@@ -45,6 +52,9 @@ describe("Escalation wording", () => {
     });
     expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
     expect(text).toMatch(/Reminded: 4 hours ago$/);
+    const ticked = escalation({ ...sample, ticked: true, fullName: "W".repeat(400), formName: "W".repeat(400) });
+    expect(ticked.length).toBeLessThanOrEqual(MAX_MESSAGE);
+    expect(ticked).toMatch(/Note: ticked the reminder task without submitting$/);
   });
 });
 

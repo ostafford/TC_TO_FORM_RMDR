@@ -9,22 +9,25 @@
  *  - still open 7 days after the Shift: delete it (the Escalation and our
  *    records stay);
  *  - after the Escalation: re-check hourly (one `form-submissions` call), and
- *    close it once a submission is credited.
+ *    close it once a submission is credited;
+ *  - ticked by the employee for the first time (#28): check for a submission,
+ *    and with none, reopen it and send the tick DM, once. A later tick leaves
+ *    it closed; the Escalation notes any tick.
  * Only a credited submission closes it: the employee ticking it is never the
- * check (#28 handles that tick).
+ * check.
  */
 import { submittedFor } from "../crediting/check.js";
-import { reminderTaskDescription, reminderTaskTitle } from "../messages/reminderTask.js";
+import { reminderTaskDescription, reminderTaskTitle, tickDm } from "../messages/reminderTask.js";
 import { TASK_LIFETIME_SECONDS, type ReminderTaskRow } from "../store.js";
 import type { DueStepDeps } from "./dueSteps.js";
 
 /** The most Reminder Tasks one run takes. */
 const TASK_BATCH = 25;
 
-export type TaskStepResult = "created" | "completed" | "deleted" | "checked" | "skipped" | "retry";
+export type TaskStepResult = "created" | "completed" | "deleted" | "checked" | "reopened" | "skipped" | "retry";
 
 export async function runTaskSteps(deps: DueStepDeps): Promise<Record<TaskStepResult, number>> {
-  const counts: Record<TaskStepResult, number> = { created: 0, completed: 0, deleted: 0, checked: 0, skipped: 0, retry: 0 };
+  const counts: Record<TaskStepResult, number> = { created: 0, completed: 0, deleted: 0, checked: 0, reopened: 0, skipped: 0, retry: 0 };
   for (const task of await deps.store.takeDueTasks(deps.now, TASK_BATCH)) {
     const result = task.task === null ? await create(task, deps) : await openTask(task, task.task, deps);
     counts[result]++;
@@ -82,7 +85,11 @@ async function openTask(
   if (shift.deleted || shift.endAt === null || now >= shift.endAt + TASK_LIFETIME_SECONDS) {
     return remove(row, task, deps);
   }
-  if (shift.status === "escalated") {
+  if (row.tick === "ticked" && shift.status !== "submitted") {
+    const found = await submittedFor(shift, now, deps);
+    if (found.outcome !== "ok") return retry(row, deps, { step: "tick_check", ...found });
+    if (!found.data) return reopen(row, task, shift.endAt, deps);
+  } else if (shift.status === "escalated") {
     const found = await submittedFor(shift, now, deps);
     if (found.outcome !== "ok") return retry(row, deps, { step: "task_recheck", ...found });
     if (!found.data) {
@@ -100,6 +107,62 @@ async function openTask(
   if (done.outcome !== "ok" && done.status !== 404) return retry(row, deps, { step: "task_complete", ...done });
   await store.finishTask(row.shiftId, done.outcome === "ok" ? "completed" : "deleted");
   return "completed";
+}
+
+/**
+ * Ticked without submitting: reopen the task, then tell the employee, with
+ * the DM claimed so it goes out at most once. Reopening is a full replace and
+ * safe to repeat, so a failed DM retries both.
+ */
+async function reopen(
+  row: ReminderTaskRow,
+  task: NonNullable<ReminderTaskRow["task"]>,
+  endAt: number,
+  deps: DueStepDeps,
+): Promise<TaskStepResult> {
+  const { store, ct, settings, now } = deps;
+  const { shift } = row;
+  const claimKey = `tick:${row.shiftId}`;
+  if ((await store.sendState(claimKey)) === "done") {
+    await store.markTickHandled(row.shiftId, claimKey, now);
+    return "reopened";
+  }
+
+  const user = await ct.getUser(shift.userId);
+  if (user.outcome !== "ok") return retry(row, deps, { step: "user", ...user });
+  const form = await ct.getForm(settings.complianceFormId);
+  if (form.outcome !== "ok") return retry(row, deps, { step: "form", ...form });
+
+  const reopened = await ct.reopenTask(row.boardId, task.id, task);
+  if (reopened.outcome !== "ok") {
+    // A 404: the task never existed on this board. Nothing to reopen or point to.
+    if (reopened.status === 404) {
+      await store.finishTask(row.shiftId, "deleted");
+      return "deleted";
+    }
+    return retry(row, deps, { step: "task_reopen", ...reopened });
+  }
+
+  if (!(await store.claimSend(claimKey, row.shiftId, now))) {
+    // Held: another run mid-send, or one that died (alerting is #33).
+    await store.releaseTask(row.shiftId);
+    (deps.log ?? (() => {}))({ evt: "tick_claim_held", shiftId: row.shiftId });
+    return "skipped";
+  }
+  const text = tickDm({
+    firstName: user.data?.firstName ?? "",
+    shift: { startSeconds: shift.startAt, endSeconds: endAt, timeZone: shift.startTz },
+    deploymentZone: settings.timeZone,
+    formName: form.data.formName,
+    whereToFind: settings.whereToFind,
+  });
+  const sent = await ct.sendDirectMessage(shift.userId, text);
+  if (sent.outcome !== "ok") {
+    await store.releaseSend(claimKey);
+    return retry(row, deps, { step: "tick_dm", ...sent });
+  }
+  await store.markTickHandled(row.shiftId, claimKey, now);
+  return "reopened";
 }
 
 async function remove(
