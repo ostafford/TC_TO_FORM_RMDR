@@ -12,7 +12,7 @@ export const PUBLISHER_ID = 4242;
 
 export async function resetDb(): Promise<void> {
   await env.DB.batch(
-    ["send_claims", "reminder_tasks", "shift_segments", "shifts", "manual_breaks", "webhook_deliveries"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
+    ["send_claims", "reminder_tasks", "shift_segments", "shifts", "manual_breaks", "webhook_deliveries", "sweep_clocks", "sweep_state", "sweep_finds"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
   );
 }
 

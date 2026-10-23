@@ -48,6 +48,26 @@ export interface TimeActivity {
   end?: Punch;
   schedulerShiftId?: string;
   isAutoClockOut?: boolean;
+  /** When the record was last changed (Unix seconds); the sweep reads it (#32). */
+  modifiedAt?: number;
+}
+
+/** One row of `GET /time-clock/v1/time-clocks`. Archived clocks are listed too. */
+export interface TimeClock {
+  id: number;
+  name: string;
+  isArchived: boolean;
+}
+
+/**
+ * One user's records from `GET .../time-activities` (#32): Shift Segments and
+ * manual breaks, each in the {@link TimeActivity} shape (tested live
+ * 2026-10-21: breaks carry `id`, `start`, `end`, `modifiedAt`).
+ */
+export interface UserTimeActivities {
+  userId: number;
+  shifts: TimeActivity[];
+  manualBreaks: TimeActivity[];
 }
 
 /** `GET /forms/v1/forms/{formId}`, the fields this project reads. */
@@ -86,6 +106,7 @@ export interface RateLimit {
   minuteRemaining: number | null;
   minuteLimit: number | null;
   dayRemaining: number | null;
+  dayLimit: number | null;
 }
 
 export type CtResult<T> =

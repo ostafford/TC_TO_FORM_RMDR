@@ -5,7 +5,8 @@
  *    Reminder if nothing arrived;
  *  - the escalation point, the escalation delay after the Reminder: the check
  *    again, then an Escalation to each recipient if still nothing;
- * then each Reminder Task step that is due (./reminderTask.ts).
+ * then each Reminder Task step that is due (./reminderTask.ts), then the
+ * polling sweep (./sweep.ts).
  */
 import type { ConnecteamClient } from "../connecteam/client.js";
 import { submittedFor } from "../crediting/check.js";
@@ -15,6 +16,7 @@ import { escalation } from "../messages/escalation.js";
 import { reminderShiftEnded } from "../messages/reminder.js";
 import type { ShiftRow, WorkList } from "../store.js";
 import { runTaskSteps, type TaskStepResult } from "./reminderTask.js";
+import { runSweep, type SweepResult } from "./sweep.js";
 
 export interface DueStepDeps {
   store: WorkList;
@@ -32,7 +34,7 @@ export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "ski
 
 export async function runDueSteps(
   deps: DueStepDeps,
-): Promise<Record<StepResult, number> & { tasks: Record<TaskStepResult, number> }> {
+): Promise<Record<StepResult, number> & { tasks: Record<TaskStepResult, number>; sweep: SweepResult }> {
   const counts: Record<StepResult, number> = { submitted: 0, reminded: 0, escalated: 0, retry: 0, skipped: 0 };
   for (const shift of await deps.store.takeDue(deps.now, BATCH)) {
     const result =
@@ -44,7 +46,9 @@ export async function runDueSteps(
     counts[result]++;
   }
   // After the Shifts, so a task due from this run's Reminder is created alongside it.
-  return { ...counts, tasks: await runTaskSteps(deps) };
+  const tasks = await runTaskSteps(deps);
+  // Last: what is due goes first, and a Shift the sweep finds is due from the next run.
+  return { ...counts, tasks, sweep: await runSweep(deps) };
 }
 
 async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {

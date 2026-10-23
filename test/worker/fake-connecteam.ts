@@ -4,8 +4,12 @@
  * forms, form submissions filtered by
  * user and an inclusive submitted-time window, DMs, and Quick Tasks (create,
  * a full-replace update, delete; 404 for a task that never existed, and a
- * `PUT` on a deleted one answers 200 and changes nothing, as live). A scripted reply
+ * `PUT` on a deleted one answers 200 and changes nothing, as live), and time
+ * clocks with their records for the sweep (#32). A scripted reply
  * (`failNext`) answers the next matching call instead.
+ *
+ * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
+ * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
  */
 export interface RecordedCall {
   method: string;
@@ -42,6 +46,18 @@ export interface FakeTask {
   description?: { content: string };
 }
 
+/** A Shift Segment or manual break as `GET .../time-activities` returns it. */
+export interface FakeRecord {
+  timeClockId: number;
+  userId: number;
+  kind: "shift" | "manual_break";
+  id: string;
+  start: number;
+  end?: number;
+  modifiedAt: number;
+  timezone?: string;
+}
+
 export interface SentDm {
   userId: number;
   senderId: number;
@@ -53,6 +69,12 @@ const json = (status: number, body: unknown) =>
 
 export class FakeConnecteam {
   readonly calls: RecordedCall[] = [];
+  /** The sweep's reads: `GET /time-clock/...`. */
+  readonly sweepCalls: RecordedCall[] = [];
+  readonly timeClocks: { id: number; name: string; isArchived: boolean }[] = [];
+  readonly records: FakeRecord[] = [];
+  /** Sent as `x-ratelimit-day-limit` on every answer when set. */
+  dayLimit: number | null = null;
   readonly dms: SentDm[] = [];
   readonly users = new Map<number, FakeUser>();
   readonly forms = new Map<number, string>();
@@ -98,7 +120,7 @@ export class FakeConnecteam {
     const query: Record<string, string> = {};
     url.searchParams.forEach((value, key) => (query[key] = value));
     const call: RecordedCall = { method, path: url.pathname, query, body };
-    this.calls.push(call);
+    (url.pathname.startsWith("/time-clock/") ? this.sweepCalls : this.calls).push(call);
 
     const i = this.#scripted.findIndex((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
     if (i !== -1) {
@@ -111,8 +133,20 @@ export class FakeConnecteam {
       this.duringDm = null;
       await hook(Number(dm[1]));
     }
-    return this.#answer(call);
+    const res = this.#answer(call);
+    if (this.dayLimit !== null) res.headers.set("x-ratelimit-day-limit", String(this.dayLimit));
+    return res;
   }) as typeof fetch;
+
+  addTimeClock(id: number, isArchived = false): this {
+    this.timeClocks.push({ id, name: `Clock ${id}`, isArchived });
+    return this;
+  }
+
+  addRecord(r: FakeRecord): this {
+    this.records.push(r);
+    return this;
+  }
 
   #answer({ method, path, query, body }: RecordedCall): Response {
     if (method === "GET" && path === "/users/v1/users") {
@@ -159,6 +193,30 @@ export class FakeConnecteam {
       return name === undefined
         ? json(404, { detail: "form not found" })
         : json(200, { requestId: "r", data: { formId: Number(form[1]), formName: name } });
+    }
+
+    if (method === "GET" && path === "/time-clock/v1/time-clocks") {
+      return json(200, { requestId: "r", data: { timeClocks: this.timeClocks } });
+    }
+
+    // Every record on the clock, whatever the dates: tests assert the dates asked for.
+    const activities = path.match(/^\/time-clock\/v1\/time-clocks\/(\d+)\/time-activities$/);
+    if (method === "GET" && activities) {
+      const mine = this.records.filter((r) => r.timeClockId === Number(activities[1]));
+      const byUser = new Map<number, { userId: number; shifts: unknown[]; manualBreaks: unknown[]; timeOffs: unknown[] }>();
+      for (const r of mine) {
+        const u = byUser.get(r.userId) ?? { userId: r.userId, shifts: [], manualBreaks: [], timeOffs: [] };
+        byUser.set(r.userId, u);
+        const tz = r.timezone ?? "Australia/Sydney";
+        (r.kind === "shift" ? u.shifts : u.manualBreaks).push({
+          id: r.id,
+          start: { timestamp: r.start, timezone: tz },
+          end: r.end === undefined ? null : { timestamp: r.end, timezone: tz },
+          modifiedAt: r.modifiedAt,
+          isAutoClockOut: false,
+        });
+      }
+      return json(200, { requestId: "r", data: { timeActivitiesByUsers: [...byUser.values()] } });
     }
 
     const dm = path.match(/^\/chat\/v1\/conversations\/privateMessage\/(\d+)$/);
