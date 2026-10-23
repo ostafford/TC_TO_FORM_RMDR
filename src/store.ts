@@ -4,6 +4,7 @@
  */
 import type { TimeActivity } from "./connecteam/types.js";
 import type { CreditCandidate } from "./crediting/choose.js";
+import type { SendKind } from "./messages/failureAlert.js";
 
 /**
  * open: no end yet, or on a manual break. grace: waiting for the Grace Period to end. submitted: a
@@ -22,7 +23,12 @@ export interface ShiftRow {
   formIds: number[];
   graceEndsAt: number | null;
   status: ShiftStatus;
+  /** `null` before the Reminder, and when it was given up on (#33): never sent, or unconfirmed. */
   remindedAt: number | null;
+  /** The due step's failures in a row (#33). */
+  attempts: number;
+  /** When the first of those failures happened, or `null`. */
+  failingSince: number | null;
 }
 
 /** A manual break, as the `time_activity` webhook sends it (#23), or as the sweep reads it (#32). */
@@ -86,7 +92,48 @@ export interface ReminderTaskRow {
   tick: "ticked" | "reopened" | null;
   /** The task's Shift as it is now, deleted or not. */
   shift: ShiftRow & { deleted: boolean };
+  /** The task's due step's failures in a row, and when the first happened (#33). */
+  attempts: number;
+  failingSince: number | null;
 }
+
+/** A send claim held this long belongs to a run that died mid-send: it's never retried (ADR-0002, #33). */
+export const STUCK_CLAIM_SECONDS = 10 * 60;
+
+/** The state of a send's claim. stuck: claimed more than {@link STUCK_CLAIM_SECONDS} ago and never done. */
+export type SendState = "claimed" | "stuck" | "done" | null;
+
+export type { SendKind };
+
+/**
+ * A send given up on (#33): it kept failing for about an hour (`failed`), or
+ * its claim was stuck (`unconfirmed`: it may have gone out).
+ */
+export interface Undelivered {
+  /** `<kind>:<shiftId>`: one per send and Shift. */
+  sendKey: string;
+  kind: SendKind;
+  /** The employee the send was for, or about. */
+  userId: number;
+  /** Their full name, or blank when it wasn't known. */
+  name: string;
+  shiftStart: number;
+  shiftTz: string;
+  outcome: "failed" | "unconfirmed";
+  /** The last failure's HTTP status; `null` for a timeout or a stuck claim. */
+  status: number | null;
+  failingSince: number;
+  givenUpAt: number;
+}
+
+/** The Failure Alert conditions (#33). messages: sends given up on. sweep: the sweep's reads failing. */
+export type AlertCondition = "messages" | "sweep";
+
+/**
+ * Small values the sweep keeps (migrations/0008_sweep.sql), plus when its
+ * reads started failing and the last failure's status (#33).
+ */
+export type SweepStateKey = "clocks_listed_at" | "day_limit" | "read_failing_since" | "read_failing_status";
 
 /** A Shift first known more than this long after its recorded end is never checked. */
 export const BACKFILL_CUTOFF_SECONDS = 24 * 60 * 60;
@@ -416,7 +463,8 @@ export class WorkList {
     const [r] = await this.db.batch([
       this.db
         .prepare(
-          `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?1
+          `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?1,
+             attempts = 0, failing_since = NULL
            WHERE id = ?2 AND status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL
              AND NOT EXISTS (SELECT 1 FROM shifts WHERE credited_submission_id = ?1)`,
         )
@@ -444,13 +492,18 @@ export class WorkList {
     return r.meta.changes === 1;
   }
 
-  /** The claim's state, or `null` when nothing holds it. */
-  async sendState(claimKey: string): Promise<"claimed" | "done" | null> {
+  /**
+   * The claim's state at `now`, or `null` when nothing holds it. A claim held
+   * for more than {@link STUCK_CLAIM_SECONDS} is `stuck`: the run that took it
+   * died mid-send, so whether it went out is unknown, and it's never retried.
+   */
+  async sendState(claimKey: string, now: number): Promise<SendState> {
     const r = await this.db
-      .prepare("SELECT state FROM send_claims WHERE claim_key = ?")
+      .prepare("SELECT state, claimed_at FROM send_claims WHERE claim_key = ?")
       .bind(claimKey)
-      .first<{ state: "claimed" | "done" }>();
-    return r?.state ?? null;
+      .first<{ state: "claimed" | "done"; claimed_at: number }>();
+    if (!r) return null;
+    return r.state === "claimed" && r.claimed_at <= now - STUCK_CLAIM_SECONDS ? "stuck" : r.state;
   }
 
   /** A send failed: drop its claim so a later run can try again. */
@@ -470,14 +523,39 @@ export class WorkList {
     escalateAt: number,
     reminderTask: { boardId: string } | null,
   ): Promise<void> {
-    await this.db.batch([
-      this.#sendDone(claimKey, now),
+    await this.db.batch([this.#sendDone(claimKey, now), ...this.#reminded(shiftId, now, now, escalateAt, reminderTask)]);
+  }
+
+  /**
+   * The Reminder was given up on (#33): it kept failing, or its claim was
+   * stuck. The Shift's other steps carry on as if it had gone out: the
+   * escalation point is due `escalateAt`, and the Reminder Task, if on, is due
+   * at once. `reminded_at` stays `null`, so the Escalation says so.
+   */
+  async giveUpReminder(
+    shiftId: string,
+    u: Undelivered,
+    escalateAt: number,
+    reminderTask: { boardId: string } | null,
+  ): Promise<void> {
+    await this.db.batch([this.#undelivered(u), ...this.#reminded(shiftId, null, u.givenUpAt, escalateAt, reminderTask)]);
+  }
+
+  #reminded(
+    shiftId: string,
+    remindedAt: number | null,
+    now: number,
+    escalateAt: number,
+    reminderTask: { boardId: string } | null,
+  ): D1PreparedStatement[] {
+    return [
       this.db
         // A submission credited mid-send wins: the Shift stays submitted.
         .prepare(
-          "UPDATE shifts SET status = 'reminded', reminded_at = ?, due_at = ?, lease_until = NULL WHERE id = ? AND status = 'grace'",
+          `UPDATE shifts SET status = 'reminded', reminded_at = ?, due_at = ?, lease_until = NULL, attempts = 0, failing_since = NULL
+           WHERE id = ? AND status = 'grace'`,
         )
-        .bind(now, escalateAt, shiftId),
+        .bind(remindedAt, escalateAt, shiftId),
       ...(reminderTask
         ? [
             this.db
@@ -488,7 +566,7 @@ export class WorkList {
               .bind(reminderTask.boardId, now, now, shiftId),
           ]
         : []),
-    ]);
+    ];
   }
 
   /** One recipient's send went out (`outcome === "ok"`). */
@@ -497,13 +575,18 @@ export class WorkList {
   }
 
   /**
-   * Every Escalation went out: nothing more is due for this Shift itself. Its
-   * open Reminder Task is re-checked hourly from now on.
+   * Every Escalation went out, or the ones still owed were given up on (#33,
+   * recorded with them): nothing more is due for this Shift itself. Its open
+   * Reminder Task is re-checked hourly from now on.
    */
-  async markEscalated(shiftId: string, now: number): Promise<void> {
+  async markEscalated(shiftId: string, now: number, undelivered: Undelivered | null = null): Promise<void> {
     await this.db.batch([
+      ...(undelivered ? [this.#undelivered(undelivered)] : []),
       this.db
-        .prepare("UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL WHERE id = ? AND status = 'reminded'")
+        .prepare(
+          `UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL, attempts = 0, failing_since = NULL
+           WHERE id = ? AND status = 'reminded'`,
+        )
         .bind(shiftId),
       this.db
         .prepare(
@@ -523,7 +606,8 @@ export class WorkList {
   async takeDueTasks(now: number, limit: number): Promise<ReminderTaskRow[]> {
     const due = await this.db
       .prepare(
-        `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, t.tick, s.*
+        `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, t.tick,
+                t.attempts AS task_attempts, t.failing_since AS task_failing_since, s.*
          FROM reminder_tasks t JOIN shifts s ON s.id = t.shift_id
          WHERE t.due_at <= ? AND (t.lease_until IS NULL OR t.lease_until <= ?)
          ORDER BY t.due_at LIMIT ?`,
@@ -552,6 +636,8 @@ export class WorkList {
               },
         tick: (r.tick as ReminderTaskRow["tick"]) ?? null,
         shift: { ...toShift(r), deleted: r.deleted_at !== null },
+        attempts: Number(r.task_attempts),
+        failingSince: r.task_failing_since === null ? null : Number(r.task_failing_since),
       });
     }
     return taken;
@@ -574,6 +660,7 @@ export class WorkList {
         .prepare(
           `UPDATE reminder_tasks SET
              task_id = ?3, title = ?4, user_ids = ?5, description = ?6, state = 'open', lease_until = NULL,
+             attempts = 0, failing_since = NULL,
              due_at = ${TASK_NEXT_DUE}
            WHERE shift_id = ?2`,
         )
@@ -604,14 +691,20 @@ export class WorkList {
     return results.slice(1).reduce((n, r) => n + r.meta.changes, 0);
   }
 
-  /** The ticked Reminder Task was reopened and the tick DM went out (`outcome === "ok"`). */
-  async markTickHandled(shiftId: string, claimKey: string, now: number): Promise<void> {
+  /**
+   * The ticked Reminder Task was reopened and the tick DM went out (`outcome
+   * === "ok"`), or the tick DM was given up on (#33, recorded with it).
+   */
+  async markTickHandled(shiftId: string, claim: { done: string } | { undelivered: Undelivered }, now: number): Promise<void> {
     await this.db.batch([
-      this.#sendDone(claimKey, now),
+      "done" in claim ? this.#sendDone(claim.done, now) : this.#undelivered(claim.undelivered),
       this.db.prepare("UPDATE reminder_tasks SET tick = 'reopened' WHERE shift_id = ? AND tick = 'ticked'").bind(shiftId),
       // A second statement: a `SET` reads the row as it was, so the next step must see the new tick.
       this.db
-        .prepare(`UPDATE reminder_tasks SET lease_until = NULL, due_at = ${TASK_NEXT_DUE} WHERE shift_id = ?2`)
+        .prepare(
+          `UPDATE reminder_tasks SET lease_until = NULL, attempts = 0, failing_since = NULL, due_at = ${TASK_NEXT_DUE}
+           WHERE shift_id = ?2`,
+        )
         .bind(now, shiftId),
     ]);
   }
@@ -625,20 +718,172 @@ export class WorkList {
     return r !== null;
   }
 
-  /** The Reminder Task has nothing more to do. */
-  async finishTask(shiftId: string, state: "completed" | "deleted" | "skipped"): Promise<void> {
-    await this.db
-      .prepare("UPDATE reminder_tasks SET state = ?, due_at = NULL, lease_until = NULL WHERE shift_id = ?")
-      .bind(state, shiftId)
-      .run();
+  /** The Reminder Task has nothing more to do: done, or its creation given up on (#33, recorded with it). */
+  async finishTask(shiftId: string, state: "completed" | "deleted" | "skipped", undelivered: Undelivered | null = null): Promise<void> {
+    await this.db.batch([
+      ...(undelivered ? [this.#undelivered(undelivered)] : []),
+      this.db
+        .prepare(
+          "UPDATE reminder_tasks SET state = ?, due_at = NULL, lease_until = NULL, attempts = 0, failing_since = NULL WHERE shift_id = ?",
+        )
+        .bind(state, shiftId),
+    ]);
   }
 
   /** Nothing to do for the open Reminder Task yet: schedule its next step. */
   async rescheduleTask(shiftId: string, now: number): Promise<void> {
     await this.db
-      .prepare(`UPDATE reminder_tasks SET lease_until = NULL, due_at = ${TASK_NEXT_DUE} WHERE shift_id = ?2`)
+      .prepare(
+        `UPDATE reminder_tasks SET lease_until = NULL, attempts = 0, failing_since = NULL, due_at = ${TASK_NEXT_DUE}
+         WHERE shift_id = ?2`,
+      )
       .bind(now, shiftId)
       .run();
+  }
+
+  /**
+   * The Shift's due step failed (#33): try it again `waitSeconds` from now,
+   * counting the failure. Only while the Shift is still at that step: a
+   * credit or delete that landed mid-step keeps what it set.
+   */
+  async backOff(shiftId: string, status: ShiftStatus, now: number, waitSeconds: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE shifts SET lease_until = NULL,
+           due_at = CASE WHEN status = ?2 AND due_at IS NOT NULL THEN ?3 ELSE due_at END,
+           attempts = CASE WHEN status = ?2 THEN attempts + 1 ELSE attempts END,
+           failing_since = CASE WHEN status = ?2 THEN COALESCE(failing_since, ?4) ELSE failing_since END
+         WHERE id = ?1`,
+      )
+      .bind(shiftId, status, now + waitSeconds, now)
+      .run();
+  }
+
+  /**
+   * The Reminder Task's due step failed (#33): try it again `waitSeconds`
+   * from now, counting the failure, unless a credit, delete or tick that
+   * landed mid-step made a step due sooner.
+   */
+  async backOffTask(shiftId: string, now: number, waitSeconds: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE reminder_tasks SET lease_until = NULL, attempts = attempts + 1, failing_since = COALESCE(failing_since, ?2),
+           due_at = CASE WHEN due_at > ?2 THEN due_at ELSE ?3 END
+         WHERE shift_id = ?1 AND due_at IS NOT NULL`,
+      )
+      .bind(shiftId, now, now + waitSeconds)
+      .run();
+  }
+
+  /** The sends given up on that no all clear has listed yet, oldest first (#33). */
+  async openUndelivered(): Promise<Undelivered[]> {
+    const rows = await this.db
+      .prepare("SELECT * FROM undelivered WHERE cleared_at IS NULL ORDER BY given_up_at, send_key")
+      .all<Record<string, unknown>>();
+    return rows.results.map((r) => ({
+      sendKey: String(r.send_key),
+      kind: r.kind as SendKind,
+      userId: Number(r.user_id),
+      name: String(r.name),
+      shiftStart: Number(r.shift_start),
+      shiftTz: String(r.shift_tz),
+      outcome: r.outcome as Undelivered["outcome"],
+      status: r.status === null ? null : Number(r.status),
+      failingSince: Number(r.failing_since),
+      givenUpAt: Number(r.given_up_at),
+    }));
+  }
+
+  /**
+   * Whether sends are failing now (#33): a send was given up on, and none has
+   * gone out since. A give-up and a send in the same run count as failing.
+   */
+  async sendsFailing(): Promise<boolean> {
+    const r = await this.db
+      .prepare(
+        `SELECT (SELECT MAX(given_up_at) FROM undelivered) AS gave_up,
+                (SELECT MAX(done_at) FROM send_claims WHERE done_at IS NOT NULL) AS sent`,
+      )
+      .first<{ gave_up: number | null; sent: number | null }>();
+    return r?.gave_up != null && (r.sent == null || r.gave_up >= r.sent);
+  }
+
+  /**
+   * A Failure Alert's claims (#33) that are stuck count as posted, so nothing
+   * is posted twice: an alert is raised as of its claim, an all clear cleared.
+   */
+  async settleStuckAlerts(now: number): Promise<number> {
+    const [a, b] = await this.db.batch([
+      this.db
+        .prepare("UPDATE failure_alerts SET state = 'raised', alerted_at = claimed_at WHERE state = 'alerting' AND claimed_at <= ?")
+        .bind(now - STUCK_CLAIM_SECONDS),
+      this.db
+        .prepare("UPDATE failure_alerts SET state = 'clear' WHERE state = 'clearing' AND claimed_at <= ?")
+        .bind(now - STUCK_CLAIM_SECONDS),
+    ]);
+    return a!.meta.changes + b!.meta.changes;
+  }
+
+  /**
+   * Claim the condition's alert, before posting it. Returns `false`, posting
+   * nothing, while it's held back: within `holdSeconds` of its last alert, or
+   * another run's claim.
+   */
+  async claimAlert(condition: AlertCondition, now: number, holdSeconds: number): Promise<boolean> {
+    const [, claim] = await this.db.batch([
+      this.db.prepare("INSERT OR IGNORE INTO failure_alerts (condition, state) VALUES (?, 'clear')").bind(condition),
+      this.db
+        .prepare(
+          `UPDATE failure_alerts SET state = 'alerting', claimed_at = ?2
+           WHERE condition = ?1 AND state IN ('clear', 'raised') AND (alerted_at IS NULL OR alerted_at <= ?3)`,
+        )
+        .bind(condition, now, now - holdSeconds),
+    ]);
+    return claim!.meta.changes === 1;
+  }
+
+  /** The alert went out (`outcome === "ok"`): the condition is raised, and owes an all clear. */
+  async alertPosted(condition: AlertCondition, now: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE failure_alerts SET state = 'raised', alerted_at = ? WHERE condition = ? AND state = 'alerting'")
+      .bind(now, condition)
+      .run();
+  }
+
+  /**
+   * The condition is raised without an alert: its post failed (the next run
+   * tries again), or it's held back with sends to list, so the all clear
+   * still lists them.
+   */
+  async raiseQuietly(condition: AlertCondition): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("INSERT OR IGNORE INTO failure_alerts (condition, state) VALUES (?, 'clear')").bind(condition),
+      this.db
+        .prepare("UPDATE failure_alerts SET state = 'raised' WHERE condition = ? AND state IN ('clear', 'alerting')")
+        .bind(condition),
+    ]);
+  }
+
+  /** Claim the condition's all clear, before posting it. `false` unless it's raised. */
+  async claimAllClear(condition: AlertCondition, now: number): Promise<boolean> {
+    const r = await this.db
+      .prepare("UPDATE failure_alerts SET state = 'clearing', claimed_at = ? WHERE condition = ? AND state = 'raised'")
+      .bind(now, condition)
+      .run();
+    return r.meta.changes === 1;
+  }
+
+  /** The all clear went out (`outcome === "ok"`), listing these sends: they're cleared. */
+  async allClearPosted(condition: AlertCondition, sendKeys: string[], now: number): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("UPDATE failure_alerts SET state = 'clear' WHERE condition = ? AND state = 'clearing'").bind(condition),
+      ...sendKeys.map((k) => this.db.prepare("UPDATE undelivered SET cleared_at = ? WHERE send_key = ?").bind(now, k)),
+    ]);
+  }
+
+  /** The all clear's post failed: still raised, so the next run tries again. */
+  async releaseAllClear(condition: AlertCondition): Promise<void> {
+    await this.db.prepare("UPDATE failure_alerts SET state = 'raised' WHERE condition = ? AND state = 'clearing'").bind(condition).run();
   }
 
   /** Let the next run try this Reminder Task again. */
@@ -680,12 +925,12 @@ export class WorkList {
       .run();
   }
 
-  async sweepState(key: "clocks_listed_at" | "day_limit"): Promise<number | null> {
+  async sweepState(key: SweepStateKey): Promise<number | null> {
     const r = await this.db.prepare("SELECT value FROM sweep_state WHERE key = ?").bind(key).first<{ value: number }>();
     return r?.value ?? null;
   }
 
-  async setSweepState(key: "clocks_listed_at" | "day_limit", value: number): Promise<void> {
+  async setSweepState(key: SweepStateKey, value: number): Promise<void> {
     await this.db
       .prepare("INSERT INTO sweep_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
       .bind(key, value)
@@ -697,6 +942,24 @@ export class WorkList {
    * one keeps its turn, and one no longer listed is dropped. Records the time
    * they were listed.
    */
+  /**
+   * A sweep read failed (#33): the reads have been failing since now, unless
+   * they already were. `status` is its HTTP status, 0 for no response.
+   */
+  async sweepReadFailed(now: number, status: number): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("INSERT OR IGNORE INTO sweep_state (key, value) VALUES ('read_failing_since', ?)").bind(now),
+      this.db
+        .prepare("INSERT INTO sweep_state (key, value) VALUES ('read_failing_status', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+        .bind(status),
+    ]);
+  }
+
+  /** A sweep read worked: the reads aren't failing. */
+  async sweepReadOk(): Promise<void> {
+    await this.db.prepare("DELETE FROM sweep_state WHERE key IN ('read_failing_since', 'read_failing_status')").run();
+  }
+
   async setSweepClocks(ids: number[], now: number): Promise<void> {
     const marks = ids.map(() => "?").join(", ");
     await this.db.batch([
@@ -747,6 +1010,16 @@ export class WorkList {
     return d.dedupeKey === null ? [] : [this.#delivery({ ...d, dedupeKey: d.dedupeKey }, now)];
   }
 
+  #undelivered(u: Undelivered): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `INSERT OR IGNORE INTO undelivered
+           (send_key, kind, user_id, name, shift_start, shift_tz, outcome, status, failing_since, given_up_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(u.sendKey, u.kind, u.userId, u.name, u.shiftStart, u.shiftTz, u.outcome, u.status, u.failingSince, u.givenUpAt);
+  }
+
   #sendDone(claimKey: string, now: number): D1PreparedStatement {
     return this.db.prepare("UPDATE send_claims SET state = 'done', done_at = ? WHERE claim_key = ?").bind(now, claimKey);
   }
@@ -769,5 +1042,7 @@ function toShift(r: Record<string, unknown>): ShiftRow {
     graceEndsAt: r.grace_ends_at === null ? null : Number(r.grace_ends_at),
     status: r.status as ShiftStatus,
     remindedAt: r.reminded_at === null || r.reminded_at === undefined ? null : Number(r.reminded_at),
+    attempts: Number(r.attempts ?? 0),
+    failingSince: r.failing_since === null || r.failing_since === undefined ? null : Number(r.failing_since),
   };
 }

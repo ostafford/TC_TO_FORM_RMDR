@@ -22,7 +22,7 @@
  *  - DELETE /tasks/v1/taskboards/{boardId}/tasks/{taskId}
  *  - rate limit headers: x-ratelimit-minute-remaining / -limit, -day-remaining / -limit
  */
-import { httpJson, type HttpResponse } from "../http/json.js";
+import { DEFAULT_TIMEOUT_MS, httpJson, type HttpResponse } from "../http/json.js";
 import type {
   Conversation,
   CtResult,
@@ -41,6 +41,8 @@ export interface CtClientConfig {
   customPublisherId: number;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /** Per-call timeout; defaults to {@link DEFAULT_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }
 
 const DEFAULT_BASE = "https://api.connecteam.com";
@@ -57,6 +59,7 @@ export class ConnecteamClient {
   readonly #apiKey: string;
   readonly #publisherId: number;
   readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
 
   /** Rate-limit headers from the most recent call, for callers that back off. */
   lastRateLimit: RateLimit | null = null;
@@ -67,12 +70,14 @@ export class ConnecteamClient {
     this.#apiKey = cfg.apiKey;
     this.#publisherId = cfg.customPublisherId;
     this.#fetch = cfg.fetchImpl ?? fetch;
+    this.#timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   async #call(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<HttpResponse> {
     const r = await httpJson(
       { method, url: `${this.#base}${path}`, headers: { "X-API-KEY": this.#apiKey }, body },
       this.#fetch,
+      this.#timeoutMs,
     );
     if (r.kind !== "retryable") this.lastRateLimit = readRateLimit(r.headers);
     else if (r.status === 429) this.#saw429 = true;

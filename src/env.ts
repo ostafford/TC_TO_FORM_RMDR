@@ -27,6 +27,8 @@ export interface Env {
   REMINDER_TASK_ENABLED?: string;
   /** Needed when REMINDER_TASK_ENABLED is "true". */
   TASK_BOARD_ID?: string;
+  /** The chat channel Failure Alerts are posted to (#33). */
+  ALERTS_CHANNEL_ID: string;
 }
 
 export interface Settings {
@@ -44,6 +46,8 @@ export interface Settings {
   shiftDateQuestionId: string;
   /** Where new Reminder Tasks go, or `null` when the Reminder Task is off. */
   reminderTask: { boardId: string } | null;
+  /** The Alerts Channel's conversation id. */
+  alertsChannelId: string;
 }
 
 /** The Deployment's settings, or the names of the ones that are missing or malformed. */
@@ -81,6 +85,7 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     excludedAdminIds: idList("EXCLUDED_ADMIN_IDS"),
     shiftDateQuestionId: String(env.SHIFT_DATE_QUESTION_ID ?? "").trim(),
     reminderTask: null,
+    alertsChannelId: text("ALERTS_CHANNEL_ID"),
   };
   const taskSwitch = String(env.REMINDER_TASK_ENABLED ?? "").trim();
   if (taskSwitch && taskSwitch !== "true" && taskSwitch !== "false") problems.push("REMINDER_TASK_ENABLED");
