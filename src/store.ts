@@ -25,16 +25,18 @@ export interface ShiftRow {
   remindedAt: number | null;
 }
 
-/** A manual break, as the `time_activity` webhook sends it (#23). */
+/** A manual break, as the `time_activity` webhook sends it (#23), or as the sweep reads it (#32). */
 export interface BreakWrite {
-  dedupeKey: string;
+  /** `null` when the sweep found it: no webhook delivery to record. */
+  dedupeKey: string | null;
   eventType: string;
   userId: number;
   activity: TimeActivity;
 }
 
 export interface SegmentWrite {
-  dedupeKey: string;
+  /** `null` when the sweep found it: no webhook delivery to record. */
+  dedupeKey: string | null;
   eventType: string;
   userId: number;
   timeClockId: number | null;
@@ -138,7 +140,7 @@ export class WorkList {
     const graceSeconds = opts.gracePeriodMinutes * 60;
 
     await this.db.batch([
-      this.#delivery(w, opts.now),
+      ...this.#deliveryOf(w, opts.now),
       this.db
         .prepare(
           `INSERT INTO shifts (id, user_id, time_clock_id, start_at, start_tz, scheduler_shift_id, form_ids, status, created_at)
@@ -180,7 +182,7 @@ export class WorkList {
     const from = await this.#shiftEndingAt(w.userId, a.start.timestamp);
     const graceSeconds = opts.gracePeriodMinutes * 60;
     await this.db.batch([
-      this.#delivery(w, opts.now),
+      ...this.#deliveryOf(w, opts.now),
       this.db
         .prepare(
           `INSERT INTO manual_breaks (time_activity_id, user_id, start_at, end_at) VALUES (?, ?, ?, ?)
@@ -642,6 +644,102 @@ export class WorkList {
   /** Let the next run try this Reminder Task again. */
   async releaseTask(shiftId: string): Promise<void> {
     await this.db.prepare("UPDATE reminder_tasks SET lease_until = NULL WHERE shift_id = ?").bind(shiftId).run();
+  }
+
+  /**
+   * The saved times of the Shift Segments and manual breaks we know, by id,
+   * for the sweep to compare with what Connecteam has now (#32).
+   */
+  async knownRecords(ids: string[]): Promise<Map<string, { startAt: number; endAt: number | null }>> {
+    const known = new Map<string, { startAt: number; endAt: number | null }>();
+    // D1 binds at most 100 parameters per statement.
+    for (let i = 0; i < ids.length; i += 90) {
+      const chunk = ids.slice(i, i + 90);
+      const marks = chunk.map(() => "?").join(", ");
+      const rows = await this.db
+        .prepare(
+          `SELECT time_activity_id, start_at, end_at FROM shift_segments WHERE time_activity_id IN (${marks})
+           UNION ALL
+           SELECT time_activity_id, start_at, end_at FROM manual_breaks WHERE time_activity_id IN (${marks})`,
+        )
+        .bind(...chunk, ...chunk)
+        .all<{ time_activity_id: string; start_at: number; end_at: number | null }>();
+      for (const r of rows.results) known.set(r.time_activity_id, { startAt: r.start_at, endAt: r.end_at });
+    }
+    return known;
+  }
+
+  /** The sweep added or corrected this record: no webhook told us (#32, counted by #34). */
+  async recordSweepFind(f: { timeActivityId: string; kind: "segment" | "break"; userId: number }, now: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO sweep_finds (time_activity_id, kind, user_id, found_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (time_activity_id) DO UPDATE SET found_at = excluded.found_at`,
+      )
+      .bind(f.timeActivityId, f.kind, f.userId, now)
+      .run();
+  }
+
+  async sweepState(key: "clocks_listed_at" | "day_limit"): Promise<number | null> {
+    const r = await this.db.prepare("SELECT value FROM sweep_state WHERE key = ?").bind(key).first<{ value: number }>();
+    return r?.value ?? null;
+  }
+
+  async setSweepState(key: "clocks_listed_at" | "day_limit", value: number): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO sweep_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+      .bind(key, value)
+      .run();
+  }
+
+  /**
+   * The time clocks to sweep are now `ids`: a new one is due at once, a known
+   * one keeps its turn, and one no longer listed is dropped. Records the time
+   * they were listed.
+   */
+  async setSweepClocks(ids: number[], now: number): Promise<void> {
+    const marks = ids.map(() => "?").join(", ");
+    await this.db.batch([
+      ids.length === 0
+        ? this.db.prepare("DELETE FROM sweep_clocks")
+        : this.db.prepare(`DELETE FROM sweep_clocks WHERE time_clock_id NOT IN (${marks})`).bind(...ids),
+      ...ids.map((id) => this.db.prepare("INSERT OR IGNORE INTO sweep_clocks (time_clock_id, next_at) VALUES (?, ?)").bind(id, now)),
+      this.db
+        .prepare(
+          "INSERT INTO sweep_state (key, value) VALUES ('clocks_listed_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(now),
+    ]);
+  }
+
+  async sweepClockCount(): Promise<number> {
+    const r = await this.db.prepare("SELECT COUNT(*) AS n FROM sweep_clocks").first<{ n: number }>();
+    return r?.n ?? 0;
+  }
+
+  /**
+   * Claim up to `limit` time clocks whose sweep is due, longest waiting first,
+   * by moving each one's turn on to `nextAt`. A clock another run claimed is
+   * skipped.
+   */
+  async takeDueClocks(now: number, limit: number, nextAt: number): Promise<number[]> {
+    const due = await this.db
+      .prepare("SELECT time_clock_id FROM sweep_clocks WHERE next_at <= ? ORDER BY next_at, time_clock_id LIMIT ?")
+      .bind(now, limit)
+      .all<{ time_clock_id: number }>();
+    const taken: number[] = [];
+    for (const r of due.results) {
+      const claim = await this.db
+        .prepare("UPDATE sweep_clocks SET next_at = ? WHERE time_clock_id = ? AND next_at <= ?")
+        .bind(nextAt, r.time_clock_id, now)
+        .run();
+      if (claim.meta.changes === 1) taken.push(r.time_clock_id);
+    }
+    return taken;
+  }
+
+  #deliveryOf(d: { dedupeKey: string | null; eventType: string; userId: number | null }, now: number): D1PreparedStatement[] {
+    return d.dedupeKey === null ? [] : [this.#delivery({ ...d, dedupeKey: d.dedupeKey }, now)];
   }
 
   #sendDone(claimKey: string, now: number): D1PreparedStatement {

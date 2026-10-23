@@ -12,13 +12,15 @@
  *  - GET  /users/v1/users?limit=500&offset={n}             (active users, paged)
  *  - GET  /forms/v1/forms/{formId}
  *  - GET  /forms/v1/forms/{formId}/form-submissions        (Unix-second window)
+ *  - GET  /time-clock/v1/time-clocks
+ *  - GET  /time-clock/v1/time-clocks/{id}/time-activities  (date window, no paging)
  *  - GET  /chat/v1/conversations
  *  - POST /chat/v1/conversations/privateMessage/{userId}   body { senderId, text }
  *  - POST /chat/v1/conversations/{conversationId}/message  body { senderId, text }
  *  - POST   /tasks/v1/taskboards/{boardId}/tasks           (returns the new task's `id`)
  *  - PUT    /tasks/v1/taskboards/{boardId}/tasks/{taskId}  (a full replace: complete or reopen)
  *  - DELETE /tasks/v1/taskboards/{boardId}/tasks/{taskId}
- *  - rate limit headers: x-ratelimit-minute-remaining / -limit, -day-remaining
+ *  - rate limit headers: x-ratelimit-minute-remaining / -limit, -day-remaining / -limit
  */
 import { httpJson, type HttpResponse } from "../http/json.js";
 import type {
@@ -28,6 +30,9 @@ import type {
   Form,
   FormSubmission,
   RateLimit,
+  TimeActivity,
+  TimeClock,
+  UserTimeActivities,
 } from "./types.js";
 
 export interface CtClientConfig {
@@ -131,6 +136,38 @@ export class ConnecteamClient {
     });
   }
 
+  /** Every time clock, archived ones included. */
+  async listTimeClocks(): Promise<CtResult<TimeClock[]>> {
+    const r = await this.#call("GET", `/time-clock/v1/time-clocks`);
+    return unwrap(r, (b) => {
+      const clocks = (b as Wrapped<{ timeClocks: TimeClock[] }>).data.timeClocks;
+      if (!Array.isArray(clocks)) throw new Error("no timeClocks");
+      return clocks;
+    });
+  }
+
+  /**
+   * One time clock's Shift Segments and manual breaks between two dates
+   * (`YYYY-MM-DD`, inclusive), by user. One call: the endpoint isn't paged.
+   * `end` is left out or `null` while a record is open. A record without an
+   * id or a start is dropped rather than failing the rest.
+   */
+  async listTimeActivities(timeClockId: number, startDate: string, endDate: string): Promise<CtResult<UserTimeActivities[]>> {
+    const r = await this.#call(
+      "GET",
+      `/time-clock/v1/time-clocks/${timeClockId}/time-activities?startDate=${startDate}&endDate=${endDate}`,
+    );
+    return unwrap(r, (b) => {
+      const users = (b as Wrapped<{ timeActivitiesByUsers: unknown[] }>).data.timeActivitiesByUsers;
+      if (!Array.isArray(users)) throw new Error("no timeActivitiesByUsers");
+      return users.flatMap((u) => {
+        const o = asObject(u);
+        if (!o || typeof o.userId !== "number") return [];
+        return [{ userId: o.userId, shifts: records(o.shifts), manualBreaks: records(o.manualBreaks) }];
+      });
+    });
+  }
+
   async listConversations(): Promise<CtResult<Conversation[]>> {
     const r = await this.#call("GET", `/chat/v1/conversations`);
     return unwrap(r, (b) => (b as Wrapped<{ conversations: Conversation[] }>).data.conversations);
@@ -228,6 +265,32 @@ function clamp(text: string): string {
   return t.length <= MAX_TEXT ? t : `${t.slice(0, MAX_TEXT - 1)}…`;
 }
 
+function records(v: unknown): TimeActivity[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((r) => {
+    const o = asObject(r);
+    const start = punch(o?.start);
+    if (!o || typeof o.id !== "string" || !o.id || !start) return [];
+    const a: TimeActivity = { id: o.id, start };
+    const end = punch(o.end);
+    if (end) a.end = end;
+    if (typeof o.schedulerShiftId === "string" && o.schedulerShiftId) a.schedulerShiftId = o.schedulerShiftId;
+    if (typeof o.isAutoClockOut === "boolean") a.isAutoClockOut = o.isAutoClockOut;
+    if (typeof o.modifiedAt === "number") a.modifiedAt = o.modifiedAt;
+    return [a];
+  });
+}
+
+function punch(v: unknown): TimeActivity["start"] | null {
+  const p = asObject(v);
+  if (!p || typeof p.timestamp !== "number" || typeof p.timezone !== "string") return null;
+  return { timestamp: p.timestamp, timezone: p.timezone };
+}
+
+function asObject(v: unknown): Record<string, unknown> | undefined {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+}
+
 function readRateLimit(h: Headers): RateLimit {
   const num = (name: string): number | null => {
     const v = h.get(name);
@@ -237,6 +300,7 @@ function readRateLimit(h: Headers): RateLimit {
     minuteRemaining: num("x-ratelimit-minute-remaining"),
     minuteLimit: num("x-ratelimit-minute-limit"),
     dayRemaining: num("x-ratelimit-day-remaining"),
+    dayLimit: num("x-ratelimit-day-limit"),
   };
 }
 
