@@ -722,6 +722,11 @@ export class WorkList {
    * by moving each one's turn on to `nextAt`. A clock another run claimed is
    * skipped.
    */
+  /** A claimed clock wasn't read after all (the run stopped for the minute): it's due again now. */
+  async releaseClock(timeClockId: number, now: number): Promise<void> {
+    await this.db.prepare("UPDATE sweep_clocks SET next_at = ? WHERE time_clock_id = ?").bind(now, timeClockId).run();
+  }
+
   async takeDueClocks(now: number, limit: number, nextAt: number): Promise<number[]> {
     const due = await this.db
       .prepare("SELECT time_clock_id FROM sweep_clocks WHERE next_at <= ? ORDER BY next_at, time_clock_id LIMIT ?")

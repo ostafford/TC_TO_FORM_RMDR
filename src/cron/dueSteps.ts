@@ -7,6 +7,12 @@
  *    again, then an Escalation to each recipient if still nothing;
  * then each Reminder Task step that is due (./reminderTask.ts), then the
  * polling sweep (./sweep.ts).
+ *
+ * Overlapping runs are safe: each leases what it takes, and every send is
+ * claimed. Each run is polite to the account's shared rate limit (#31): it
+ * stops for the minute on a 429, or once less than 20% of the per-minute
+ * limit remains, and hands back what it leased but didn't reach, so the next
+ * minute picks it up.
  */
 import type { ConnecteamClient } from "../connecteam/client.js";
 import { submittedFor } from "../crediting/check.js";
@@ -30,13 +36,18 @@ export interface DueStepDeps {
 /** The most Shifts one run takes. */
 const BATCH = 25;
 
-export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "skipped";
+export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "skipped" | "deferred";
 
 export async function runDueSteps(
   deps: DueStepDeps,
-): Promise<Record<StepResult, number> & { tasks: Record<TaskStepResult, number>; sweep: SweepResult }> {
-  const counts: Record<StepResult, number> = { submitted: 0, reminded: 0, escalated: 0, retry: 0, skipped: 0 };
+): Promise<Record<StepResult, number> & { tasks: Record<TaskStepResult, number>; sweep: SweepResult; paused: boolean }> {
+  const counts: Record<StepResult, number> = { submitted: 0, reminded: 0, escalated: 0, retry: 0, skipped: 0, deferred: 0 };
   for (const shift of await deps.store.takeDue(deps.now, BATCH)) {
+    if (deps.ct.minuteBudgetSpent()) {
+      await deps.store.release(shift.id);
+      counts.deferred++;
+      continue;
+    }
     const result =
       shift.status === "grace"
         ? await endOfGracePeriod(shift, deps)
@@ -48,7 +59,10 @@ export async function runDueSteps(
   // After the Shifts, so a task due from this run's Reminder is created alongside it.
   const tasks = await runTaskSteps(deps);
   // Last: what is due goes first, and a Shift the sweep finds is due from the next run.
-  return { ...counts, tasks, sweep: await runSweep(deps) };
+  const sweep = await runSweep(deps);
+  const paused = deps.ct.minuteBudgetSpent();
+  if (paused) (deps.log ?? (() => {}))({ evt: "rate_limit_pause", ...deps.ct.lastRateLimit });
+  return { ...counts, tasks, sweep, paused };
 }
 
 async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
