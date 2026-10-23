@@ -49,6 +49,8 @@ const MAX_TEXT = 500;
 const USERS_PAGE = 500;
 /** The most submissions one `form-submissions` call returns. */
 const SUBMISSIONS_PAGE = 100;
+/** Stop for the minute once less than this share of the per-minute limit remains (ADR-0002). */
+const MINUTE_HEADROOM = 0.2;
 
 export class ConnecteamClient {
   readonly #base: string;
@@ -58,6 +60,7 @@ export class ConnecteamClient {
 
   /** Rate-limit headers from the most recent call, for callers that back off. */
   lastRateLimit: RateLimit | null = null;
+  #saw429 = false;
 
   constructor(cfg: CtClientConfig) {
     this.#base = (cfg.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
@@ -72,7 +75,20 @@ export class ConnecteamClient {
       this.#fetch,
     );
     if (r.kind !== "retryable") this.lastRateLimit = readRateLimit(r.headers);
+    else if (r.status === 429) this.#saw429 = true;
     return r;
+  }
+
+  /**
+   * Whether the caller should stop calling for the rest of this minute (#31):
+   * a 429 came back, or the last response left less than 20% of the
+   * per-minute limit, which the account shares with its other integrations.
+   * A client lives for one cron run, so this clears each minute.
+   */
+  minuteBudgetSpent(): boolean {
+    if (this.#saw429) return true;
+    const rl = this.lastRateLimit;
+    return !!rl && rl.minuteRemaining !== null && rl.minuteLimit !== null && rl.minuteRemaining < rl.minuteLimit * MINUTE_HEADROOM;
   }
 
   async getUser(userId: number): Promise<CtResult<ConnecteamUser | null>> {

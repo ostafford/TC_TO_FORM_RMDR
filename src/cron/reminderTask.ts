@@ -24,11 +24,17 @@ import type { DueStepDeps } from "./dueSteps.js";
 /** The most Reminder Tasks one run takes. */
 const TASK_BATCH = 25;
 
-export type TaskStepResult = "created" | "completed" | "deleted" | "checked" | "reopened" | "skipped" | "retry";
+export type TaskStepResult = "created" | "completed" | "deleted" | "checked" | "reopened" | "skipped" | "retry" | "deferred";
 
 export async function runTaskSteps(deps: DueStepDeps): Promise<Record<TaskStepResult, number>> {
-  const counts: Record<TaskStepResult, number> = { created: 0, completed: 0, deleted: 0, checked: 0, reopened: 0, skipped: 0, retry: 0 };
+  const counts: Record<TaskStepResult, number> = { created: 0, completed: 0, deleted: 0, checked: 0, reopened: 0, skipped: 0, retry: 0, deferred: 0 };
   for (const task of await deps.store.takeDueTasks(deps.now, TASK_BATCH)) {
+    // Stopped for the minute (#31): hand it back for the next run.
+    if (deps.ct.minuteBudgetSpent()) {
+      await deps.store.releaseTask(task.shiftId);
+      counts.deferred++;
+      continue;
+    }
     const result = task.task === null ? await create(task, deps) : await openTask(task, task.task, deps);
     counts[result]++;
   }

@@ -6,7 +6,9 @@
  * a full-replace update, delete; 404 for a task that never existed, and a
  * `PUT` on a deleted one answers 200 and changes nothing, as live), and time
  * clocks with their records for the sweep (#32). A scripted reply
- * (`failNext`) answers the next matching call instead.
+ * (`failNext`) answers the next matching call instead, and a stalled one
+ * (`stallNext`) answers only when the test lets it go, as a run that dies
+ * mid-call never hears back (#31).
  *
  * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
  * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
@@ -75,6 +77,9 @@ export class FakeConnecteam {
   readonly records: FakeRecord[] = [];
   /** Sent as `x-ratelimit-day-limit` on every answer when set. */
   dayLimit: number | null = null;
+  /** Sent as `x-ratelimit-minute-limit` / `-minute-remaining` on every answer when set. */
+  minute: { limit: number; remaining: number } | null = null;
+  readonly #stalls: Array<{ method: string; pathPrefix: string; reached: () => void; gate: Promise<number> }> = [];
   readonly dms: SentDm[] = [];
   readonly users = new Map<number, FakeUser>();
   readonly forms = new Map<number, string>();
@@ -108,6 +113,19 @@ export class FakeConnecteam {
     return this;
   }
 
+  /**
+   * Hold the next call whose path starts with `pathPrefix` unanswered.
+   * `reached` resolves once it's made; `release(status)` answers it.
+   */
+  stallNext(method: string, pathPrefix: string): { reached: Promise<void>; release: (status: number) => void } {
+    let reached!: () => void;
+    let release!: (status: number) => void;
+    const reachedP = new Promise<void>((r) => (reached = r));
+    const gate = new Promise<number>((r) => (release = r));
+    this.#stalls.push({ method, pathPrefix, reached, gate });
+    return { reached: reachedP, release };
+  }
+
   /** The calls to one path, e.g. `"/forms/v1/forms/9001/form-submissions"`. */
   callsTo(method: string, path: string): RecordedCall[] {
     return this.calls.filter((c) => c.method === method && c.path === path);
@@ -122,6 +140,12 @@ export class FakeConnecteam {
     const call: RecordedCall = { method, path: url.pathname, query, body };
     (url.pathname.startsWith("/time-clock/") ? this.sweepCalls : this.calls).push(call);
 
+    const stall = this.#stalls.findIndex((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
+    if (stall !== -1) {
+      const [s] = this.#stalls.splice(stall, 1);
+      s!.reached();
+      return json(await s!.gate, { detail: "released stall" });
+    }
     const i = this.#scripted.findIndex((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
     if (i !== -1) {
       const [s] = this.#scripted.splice(i, 1);
@@ -135,6 +159,10 @@ export class FakeConnecteam {
     }
     const res = this.#answer(call);
     if (this.dayLimit !== null) res.headers.set("x-ratelimit-day-limit", String(this.dayLimit));
+    if (this.minute !== null) {
+      res.headers.set("x-ratelimit-minute-limit", String(this.minute.limit));
+      res.headers.set("x-ratelimit-minute-remaining", String(this.minute.remaining));
+    }
     return res;
   }) as typeof fetch;
 

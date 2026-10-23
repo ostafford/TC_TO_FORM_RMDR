@@ -39,6 +39,8 @@ export function sweepIntervalMinutes(clocks: number, dayLimit: number): number {
 }
 
 export interface SweepResult {
+  /** Clocks whose turn came but weren't read: the run stopped for the minute (#31). */
+  deferred: number;
   /** Time clocks read this run. */
   swept: number;
   /** Records the webhook missed or left stale, now fed in. */
@@ -49,7 +51,8 @@ export interface SweepResult {
 export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
   const { store, ct, now } = deps;
   const log = deps.log ?? (() => {});
-  const result: SweepResult = { swept: 0, found: 0, failed: 0 };
+  const result: SweepResult = { swept: 0, found: 0, failed: 0, deferred: 0 };
+  if (ct.minuteBudgetSpent()) return result;
 
   const listedAt = await store.sweepState("clocks_listed_at");
   if (listedAt === null || now - listedAt >= CLOCK_LIST_SECONDS) {
@@ -70,6 +73,11 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
     const today = dateIn(deps.settings.timeZone, now);
     const yesterday = dayBefore(today);
     for (const clock of await store.takeDueClocks(now, Math.ceil(clocks / every), now + every * 60)) {
+      if (ct.minuteBudgetSpent()) {
+        await store.releaseClock(clock, now);
+        result.deferred++;
+        continue;
+      }
       const read = await ct.listTimeActivities(clock, yesterday, today);
       if (read.outcome !== "ok") {
         // Its turn has moved on: the next read is one interval away, as planned.
