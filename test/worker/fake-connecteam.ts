@@ -8,7 +8,10 @@
  * clocks with their records for the sweep (#32). A scripted reply
  * (`failNext`) answers the next matching call instead, and a stalled one
  * (`stallNext`) answers only when the test lets it go, as a run that dies
- * mid-call never hears back (#31).
+ * mid-call never hears back (#31). `failAll` keeps answering matching calls
+ * with a status until `recover()`, as an outage does, and a status of `null`
+ * drops the connection instead, as a timeout does (#33). Channel posts (the
+ * Failure Alerts) land in `posts`.
  *
  * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
  * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
@@ -81,6 +84,8 @@ export class FakeConnecteam {
   minute: { limit: number; remaining: number } | null = null;
   readonly #stalls: Array<{ method: string; pathPrefix: string; reached: () => void; gate: Promise<number> }> = [];
   readonly dms: SentDm[] = [];
+  readonly posts: { conversationId: string; senderId: number; text: string }[] = [];
+  readonly #outages: Array<{ method: string; pathPrefix: string; status: number | null }> = [];
   readonly users = new Map<number, FakeUser>();
   readonly forms = new Map<number, string>();
   readonly submissions: FakeSubmission[] = [];
@@ -88,7 +93,7 @@ export class FakeConnecteam {
   readonly tasks = new Map<string, FakeTask>();
   readonly #deletedTasks = new Set<string>();
   #nextTask = 0;
-  readonly #scripted: Array<{ method: string; pathPrefix: string; status: number }> = [];
+  readonly #scripted: Array<{ method: string; pathPrefix: string; status: number | null }> = [];
   /** Runs while a DM is being sent, before it's answered: for racing a webhook against a send. */
   duringDm: ((userId: number) => Promise<void>) | null = null;
 
@@ -107,9 +112,21 @@ export class FakeConnecteam {
     return this;
   }
 
-  /** Answer the next call whose path starts with `pathPrefix` with this status. */
-  failNext(method: string, pathPrefix: string, status: number): this {
+  /** Answer the next call whose path starts with `pathPrefix` with this status; `null` drops the connection. */
+  failNext(method: string, pathPrefix: string, status: number | null): this {
     this.#scripted.push({ method, pathPrefix, status });
+    return this;
+  }
+
+  /** Answer every call whose path starts with `pathPrefix` with this status until {@link recover}; `null` drops the connection. */
+  failAll(method: string, pathPrefix: string, status: number | null): this {
+    this.#outages.push({ method, pathPrefix, status });
+    return this;
+  }
+
+  /** End every {@link failAll}. */
+  recover(): this {
+    this.#outages.length = 0;
     return this;
   }
 
@@ -147,9 +164,11 @@ export class FakeConnecteam {
       return json(await s!.gate, { detail: "released stall" });
     }
     const i = this.#scripted.findIndex((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
-    if (i !== -1) {
-      const [s] = this.#scripted.splice(i, 1);
-      return json(s!.status, { detail: "scripted failure" });
+    const failure =
+      i !== -1 ? this.#scripted.splice(i, 1)[0]! : this.#outages.find((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
+    if (failure) {
+      if (failure.status === null) throw new TypeError("Network connection lost.");
+      return json(failure.status, { detail: "scripted failure" });
     }
     const dm = method === "POST" && url.pathname.match(/^\/chat\/v1\/conversations\/privateMessage\/(\d+)$/);
     if (dm && this.duringDm) {
@@ -251,6 +270,13 @@ export class FakeConnecteam {
     if (method === "POST" && dm) {
       const b = body as { senderId: number; text: string };
       this.dms.push({ userId: Number(dm[1]), senderId: b.senderId, text: b.text });
+      return json(200, { requestId: "r", data: {} });
+    }
+
+    const channel = path.match(/^\/chat\/v1\/conversations\/([^/]+)\/message$/);
+    if (method === "POST" && channel) {
+      const b = body as { senderId: number; text: string };
+      this.posts.push({ conversationId: decodeURIComponent(channel[1]!), senderId: b.senderId, text: b.text });
       return json(200, { requestId: "r", data: {} });
     }
 

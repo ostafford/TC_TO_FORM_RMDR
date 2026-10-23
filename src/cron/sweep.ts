@@ -10,6 +10,11 @@
  * It's spaced out so it never uses more than 20% of the account's daily
  * allowance, which other integrations share: each clock is read every
  * {@link sweepIntervalMinutes} minutes.
+ *
+ * A failed read isn't retried early: the clock's next turn is one interval
+ * away, as planned. A run whose reads all failed marks the sweep failing; one
+ * that read anything clears it. Failing for about an hour raises a Failure
+ * Alert (./failureAlerts.ts, #33).
  */
 import type { TimeActivity } from "../connecteam/types.js";
 import type { DueStepDeps } from "./dueSteps.js";
@@ -53,16 +58,21 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
   const log = deps.log ?? (() => {});
   const result: SweepResult = { swept: 0, found: 0, failed: 0, deferred: 0 };
   if (ct.minuteBudgetSpent()) return result;
+  // Whether any read worked this run, and the last failed one's status.
+  let readOk = false;
+  let lastFailure: number | null = null;
 
   const listedAt = await store.sweepState("clocks_listed_at");
   if (listedAt === null || now - listedAt >= CLOCK_LIST_SECONDS) {
     const clocks = await ct.listTimeClocks();
     if (clocks.outcome === "ok") {
+      readOk = true;
       // Archived clocks take no new records.
       await store.setSweepClocks(clocks.data.filter((c) => !c.isArchived).map((c) => c.id), now);
     } else {
       // Sweep the clocks already known; listing is tried again next run.
       result.failed++;
+      lastFailure = clocks.status;
       log({ evt: "step_failed", step: "sweep_clocks", ...clocks });
     }
   }
@@ -82,9 +92,11 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
       if (read.outcome !== "ok") {
         // Its turn has moved on: the next read is one interval away, as planned.
         result.failed++;
+        lastFailure = read.status;
         log({ evt: "step_failed", step: "sweep", timeClockId: clock, ...read });
         continue;
       }
+      readOk = true;
       result.swept++;
       result.found += await feed(clock, read.data, deps);
     }
@@ -92,6 +104,8 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
 
   const dayLimit = ct.lastRateLimit?.dayLimit;
   if (dayLimit) await store.setSweepState("day_limit", dayLimit);
+  if (readOk) await store.sweepReadOk();
+  else if (result.failed > 0) await store.sweepReadFailed(now, lastFailure ?? 0);
   return result;
 }
 

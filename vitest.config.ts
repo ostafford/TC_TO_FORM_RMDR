@@ -51,6 +51,7 @@ export default defineConfig(async () => {
                   GRACE_PERIOD_MINUTES: "30",
                   ESCALATION_DELAY_MINUTES: "240",
                   TIME_ZONE: "Australia/Sydney",
+                  ALERTS_CHANNEL_ID: "alerts-1",
                 },
               },
             }),

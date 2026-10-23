@@ -137,7 +137,8 @@ describe("the per-minute rate limit", () => {
     expect(h.ct.dms).toEqual([]);
     expect(h.ct.sweepCalls).toEqual([]);
 
+    // The Shift that got the 429 waits out its first backoff (#33), so the others, due earlier, go first.
     await h.tick(ALL_DUE + MINUTE);
-    expect(remindedUsers()).toEqual([501, 502, 503]);
+    expect(remindedUsers()).toEqual([502, 503, 501]);
   });
 });

@@ -43,6 +43,10 @@ describe("Escalation wording", () => {
     expect(escalation({ ...sample, remindedMinutesAgo: 241 })).toMatch(/Reminded: 4 hours 1 minute ago$/);
   });
 
+  it("says the Reminder wasn't confirmed when it was given up on (#33)", () => {
+    expect(escalation({ ...sample, remindedMinutesAgo: null })).toMatch(/\nReminded: not confirmed \(sending failed\)$/);
+  });
+
   it(`stays at or under ${MAX_MESSAGE} characters with long sample names, keeping the Reminded line`, () => {
     const text = escalation({
       ...sample,

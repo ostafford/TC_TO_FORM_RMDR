@@ -1,7 +1,8 @@
 /*
  * Copied from EH_Webhook (~/IDP/EH_Webhook/src/http/json.ts at 0c5ec92),
- * with DELETE added for Reminder Tasks (#27). Never import it from the
- * sibling project: this repo installs on its own (spec #19, user story 71).
+ * with DELETE added for Reminder Tasks (#27) and a per-call timeout (#33).
+ * Never import it from the sibling project: this repo installs on its own
+ * (spec #19, user story 71).
  */
 /**
  * One JSON-over-HTTP call, with the response sorted into the four buckets every
@@ -21,11 +22,38 @@ export type HttpResponse =
   | { kind: "client_error"; status: number; body: unknown; headers: Headers }
   | { kind: "retryable"; status: number | null; detail: string };
 
+/**
+ * How long one call may take, response body included, before it counts as a
+ * timeout (`retryable`, status `null`). Well inside a cron run's 5-minute
+ * lease, so a hung call can't outlive the run's hold on its Shift (#31).
+ */
+export const DEFAULT_TIMEOUT_MS = 10_000;
+
 export async function httpJson(
   req: HttpRequest,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<HttpResponse> {
+  const abort = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Raced as well as passed on, so a fetch that ignores the signal still times out.
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      abort.abort();
+      resolve("timeout");
+    }, timeoutMs);
+  });
+  try {
+    const r = await Promise.race([call(req, fetchImpl, abort.signal), timedOut]);
+    return r === "timeout" ? { kind: "retryable", status: null, detail: `timed out after ${timeoutMs / 1000} s` } : r;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function call(req: HttpRequest, fetchImpl: typeof fetch, signal: AbortSignal): Promise<HttpResponse> {
   const init: RequestInit = {
+    signal,
     method: req.method,
     headers: {
       accept: "application/json",
@@ -42,7 +70,12 @@ export async function httpJson(
     return { kind: "retryable", status: null, detail: err instanceof Error ? err.message : String(err) };
   }
 
-  const text = await res.text();
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (err) {
+    return { kind: "retryable", status: null, detail: err instanceof Error ? err.message : String(err) };
+  }
   const body = text ? safeParse(text) : null;
   const headers = res.headers;
 

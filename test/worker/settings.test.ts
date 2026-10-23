@@ -1,4 +1,4 @@
-/** Reading the Reminder Task setting (#27). Pure, but `Env` needs the Worker types. */
+/** Reading the Reminder Task (#27) and Alerts Channel (#33) settings. Pure, but `Env` needs the Worker types. */
 import { describe, it, expect } from "vitest";
 import { readSettings, type Env } from "../../src/env.js";
 
@@ -11,6 +11,7 @@ const env = {
   GRACE_PERIOD_MINUTES: "30",
   ESCALATION_DELAY_MINUTES: "240",
   TIME_ZONE: "Australia/Sydney",
+  ALERTS_CHANNEL_ID: "alerts-1",
 } as Env;
 
 describe("the Reminder Task setting", () => {
@@ -35,5 +36,16 @@ describe("the Reminder Task setting", () => {
 
   it("refuses anything but true or false", () => {
     expect(readSettings({ ...env, REMINDER_TASK_ENABLED: "yes" })).toEqual({ ok: false, problems: ["REMINDER_TASK_ENABLED"] });
+  });
+});
+
+describe("the Alerts Channel setting", () => {
+  it("is read trimmed", () => {
+    const r = readSettings({ ...env, ALERTS_CHANNEL_ID: " alerts-9 " });
+    expect(r.ok && r.settings.alertsChannelId).toBe("alerts-9");
+  });
+
+  it("is required: Failure Alerts have nowhere else to go", () => {
+    expect(readSettings({ ...env, ALERTS_CHANNEL_ID: "" })).toEqual({ ok: false, problems: ["ALERTS_CHANNEL_ID"] });
   });
 });
