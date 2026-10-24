@@ -40,6 +40,20 @@ export function formatShift(shift: ShiftTimes, deploymentZone: string): string {
   return start.zone === home.zone ? text : `${text} (${start.zone})`;
 }
 
+/**
+ * "Tue 6 Oct, 9:00 am, scheduled to end 5:00 pm": a Shift still open past its
+ * Scheduled Shift's planned end (#24), whose end is that plan, not a clock-out.
+ * The end's day is added when it differs, and the zone's short name as for
+ * {@link formatShift}.
+ */
+export function formatOpenShift(shift: ShiftTimes, deploymentZone: string): string {
+  const start = parts(shift.startSeconds, shift.timeZone);
+  const end = parts(shift.endSeconds, shift.timeZone);
+  const text = `${start.day}, ${start.time}, scheduled to end ${end.day === start.day ? end.time : `${end.day}, ${end.time}`}`;
+  const home = parts(shift.startSeconds, deploymentZone);
+  return start.zone === home.zone ? text : `${text} (${start.zone})`;
+}
+
 /** "Mon 20 Oct", the Shift's day on its own. */
 export function formatShiftDay(startSeconds: number, timeZone: string): string {
   return parts(startSeconds, timeZone).day;

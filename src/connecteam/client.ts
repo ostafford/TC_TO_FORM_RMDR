@@ -13,6 +13,8 @@
  *  - GET  /forms/v1/forms/{formId}
  *  - GET  /forms/v1/forms/{formId}/form-submissions        (Unix-second window)
  *  - GET  /time-clock/v1/time-clocks
+ *  - GET  /scheduler/v1/schedulers
+ *  - GET  /scheduler/v{1,2}/schedulers/{schedulerId}/shifts/{shiftId}
  *  - GET  /time-clock/v1/time-clocks/{id}/time-activities  (date window, no paging)
  *  - GET  /chat/v1/conversations
  *  - POST /chat/v1/conversations/privateMessage/{userId}   body { senderId, text }
@@ -30,6 +32,8 @@ import type {
   Form,
   FormSubmission,
   RateLimit,
+  ScheduledShift,
+  Scheduler,
   TimeActivity,
   TimeClock,
   UserTimeActivities,
@@ -169,6 +173,33 @@ export class ConnecteamClient {
       const rows = (b as Wrapped<{ formSubmissions: FormSubmission[] }>).data.formSubmissions;
       if (!Array.isArray(rows)) throw new Error("no formSubmissions");
       return rows;
+    });
+  }
+
+  /** Every scheduler, archived ones included (#24). */
+  async listSchedulers(): Promise<CtResult<Scheduler[]>> {
+    const r = await this.#call("GET", `/scheduler/v1/schedulers`);
+    return unwrap(r, (b) => {
+      const rows = (b as Wrapped<{ schedulers: Scheduler[] }>).data.schedulers;
+      if (!Array.isArray(rows)) throw new Error("no schedulers");
+      return rows;
+    });
+  }
+
+  /**
+   * One Scheduled Shift by id, under one scheduler, through V1 or V2 (#24).
+   * `null` when it isn't there: a 404 ("shift not found"), a 400 for a
+   * scheduler that doesn't exist, or V2 refusing an id with a colon (tested
+   * live 2026-10-25, int_MCP research/2026-10-25-scheduler-shift-lookup.md).
+   */
+  async getScheduledShift(schedulerId: number, shiftId: string, version: 1 | 2): Promise<CtResult<ScheduledShift | null>> {
+    const r = await this.#call("GET", `/scheduler/v${version}/schedulers/${schedulerId}/shifts/${encodeURIComponent(shiftId)}`);
+    if (r.kind === "client_error" && r.status === 404) return { outcome: "ok", data: null };
+    if (r.kind === "client_error" && r.status === 400) return { outcome: "ok", data: null };
+    return unwrap(r, (b) => {
+      const s = (b as Wrapped<ScheduledShift>).data;
+      if (typeof s.endTime !== "number" || typeof s.startTime !== "number") throw new Error("no shift times");
+      return s;
     });
   }
 

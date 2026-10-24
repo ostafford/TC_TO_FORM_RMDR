@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reminderShiftEnded, type ReminderInput } from "../src/messages/reminder.js";
+import { reminderShiftEnded, reminderStillOpen, type ReminderInput } from "../src/messages/reminder.js";
 import { formatDuration, formatShift, MAX_MESSAGE } from "../src/messages/format.js";
 import { reminderTaskDescription, reminderTaskTitle, tickDm, type ReminderTaskInput } from "../src/messages/reminderTask.js";
 
@@ -138,5 +138,42 @@ describe("durations", () => {
     [90, "1 hour 30 minutes"],
   ])("%i minutes reads as %s", (minutes, text) => {
     expect(formatDuration(minutes)).toBe(text);
+  });
+});
+
+describe("Reminder (still open past the planned end, #24)", () => {
+  const open = { ...sample, shift: { ...sample.shift, endSeconds: SYD_9AM + 8 * 60 * 60 } };
+
+  it("reads as the variant D 'still clocked in' wording, with the scheduled end", () => {
+    expect(reminderStillOpen({ ...open, onBreak: false })).toBe(
+      "Hi Jordan 👋\n\n" +
+        "You're still clocked in, and we haven't received your form for this shift yet.\n\n" +
+        "Shift: Tue 20 Oct, 9:00 am, scheduled to end 5:00 pm\n" +
+        "Form: Daily Safety Checklist\n" +
+        "Where: the Forms tab in the Connecteam app\n\n" +
+        "1. Clock out if you've finished.\n" +
+        "2. Submit the form.\n\n" +
+        "Your manager is notified if it's still missing in 4 hours.",
+    );
+  });
+
+  it("opens and steps differently for a break never ended", () => {
+    const text = reminderStillOpen({ ...open, onBreak: true });
+    expect(text).toContain("Your break is still running, and we haven't received your form for this shift yet.");
+    expect(text).toContain("1. End your break and clock out if you've finished.\n2. Submit the form.");
+  });
+
+  it("names the end's day when it's another day, and the zone when it differs", () => {
+    const overnight = { ...open, shift: { ...open.shift, endSeconds: SYD_9AM + 20 * 60 * 60 } };
+    expect(reminderStillOpen({ ...overnight, onBreak: false })).toContain("Shift: Tue 20 Oct, 9:00 am, scheduled to end Wed 21 Oct, 5:00 am\n");
+    const perth = { ...open, shift: { ...open.shift, timeZone: "Australia/Perth" } };
+    expect(reminderStillOpen({ ...perth, onBreak: false })).toContain("scheduled to end 2:00 pm (AWST)\n");
+  });
+
+  it(`stays at or under ${MAX_MESSAGE} characters with long sample names`, () => {
+    for (const onBreak of [false, true]) {
+      const text = reminderStillOpen({ ...open, onBreak, firstName: long(200), formName: long(300), whereToFind: long(300) });
+      expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
+    }
   });
 });

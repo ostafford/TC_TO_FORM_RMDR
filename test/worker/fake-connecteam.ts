@@ -13,7 +13,9 @@
  * drops the connection instead, as a timeout does (#33). Channel posts (the
  * Failure Alerts) land in `posts`. A deleted publisher or task board answers
  * as live (#34): DMs and channel posts 404 "Sender id not found", a create
- * 400 naming the board.
+ * 400 naming the board. Schedulers and their Scheduled Shifts answer as live
+ * too (#24): a missing shift 404s, a missing scheduler 400s, and V2 refuses
+ * an id with a colon.
  *
  * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
  * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
@@ -90,7 +92,26 @@ export class FakeConnecteam {
   readonly dms: SentDm[] = [];
   readonly posts: { conversationId: string; senderId: number; text: string }[] = [];
   readonly #outages: Array<{ method: string; pathPrefix: string; status: number | null }> = [];
+  readonly schedulers: { schedulerId: number; name: string; isArchived: boolean }[] = [];
+  /** Scheduled Shifts by `<version>:<schedulerId>:<id>`; tests may move a planned end. */
+  readonly scheduledShifts = new Map<string, { id: string; startTime: number; endTime: number; assignedUserIds: number[] }>();
   readonly #deletedPublishers = new Set<number>();
+
+  addScheduler(schedulerId: number, isArchived = false): this {
+    this.schedulers.push({ schedulerId, name: `Schedule ${schedulerId}`, isArchived });
+    return this;
+  }
+
+  /** A Scheduled Shift, found through V1 (or V2 with `version: 2`). */
+  addScheduledShift(s: { schedulerId: number; id: string; start: number; end: number; userId: number; version?: 1 | 2 }): this {
+    this.scheduledShifts.set(`${s.version ?? 1}:${s.schedulerId}:${s.id}`, {
+      id: s.id,
+      startTime: s.start,
+      endTime: s.end,
+      assignedUserIds: [s.userId],
+    });
+    return this;
+  }
   readonly #deletedBoards = new Set<string>();
 
   /** The custom publisher is deleted in Connecteam. */
@@ -271,6 +292,21 @@ export class FakeConnecteam {
       return name === undefined
         ? json(404, { detail: "form not found" })
         : json(200, { requestId: "r", data: { formId: Number(form[1]), formName: name } });
+    }
+
+    if (method === "GET" && path === "/scheduler/v1/schedulers") {
+      return json(200, { requestId: "r", data: { schedulers: this.schedulers } });
+    }
+    const scheduled = path.match(/^\/scheduler\/v([12])\/schedulers\/(\d+)\/shifts\/([^/]+)$/);
+    if (method === "GET" && scheduled) {
+      const [, version, schedulerId, raw] = scheduled;
+      const id = decodeURIComponent(raw!);
+      if (!this.schedulers.some((x) => x.schedulerId === Number(schedulerId))) {
+        return json(400, { detail: "schedule id doesn't exist" });
+      }
+      if (version === "2" && id.includes(":")) return json(400, { error: "shift id is invalid", details: { error_code: 1004 } });
+      const found = this.scheduledShifts.get(`${version}:${schedulerId}:${id}`);
+      return found ? json(200, { requestId: "r", data: found }) : json(404, { detail: "shift not found" });
     }
 
     if (method === "GET" && path === "/time-clock/v1/time-clocks") {

@@ -113,3 +113,20 @@ export type CtResult<T> =
   | { outcome: "ok"; data: T }
   | { outcome: "retryable"; status: number | null; detail: string }
   | { outcome: "error"; status: number; detail: string };
+
+/** A scheduler (the Schedule app): one call lists them, archived ones included. */
+export interface Scheduler {
+  schedulerId: number;
+  name: string;
+  isArchived: boolean;
+  timezone?: string;
+}
+
+/** A Scheduled Shift's planned times (Unix seconds), as `GET .../shifts/{shiftId}` returns them. */
+export interface ScheduledShift {
+  id: string;
+  startTime: number;
+  endTime: number;
+  assignedUserIds?: number[];
+}
+

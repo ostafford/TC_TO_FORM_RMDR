@@ -31,6 +31,10 @@ export interface ShiftRow {
   failingSince: number | null;
   /** Its Escalation is held for Quiet Hours, to go out in the Escalation Summary (#29). */
   held: boolean;
+  /** The Scheduled Shift's id, or `null` for none (#24). */
+  schedulerShiftId: string | null;
+  /** Treated as ended at its Scheduled Shift's planned end (`endAt`), being still open then (#24). */
+  endedBySchedule: boolean;
 }
 
 /** A manual break, as the `time_activity` webhook sends it (#23), or as the sweep reads it (#32). */
@@ -68,6 +72,13 @@ export const TASK_RECHECK_SECONDS = 60 * 60;
 
 /** A Reminder Task still open this long after its Shift ended is deleted. */
 export const TASK_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * When an open Shift with a Scheduled Shift is next checked against it (#24):
+ * at its planned end once read, at once until then. Used only in an
+ * `UPDATE shifts`.
+ */
+const SCHEDULE_CHECK_DUE = `CASE WHEN shifts.scheduler_shift_id IS NOT NULL THEN COALESCE(shifts.scheduled_end_at, shifts.created_at) END`;
 
 /** A Reminder Task with a step still to do: not created yet, or open. */
 const TASK_ACTIVE = "'pending', 'open'";
@@ -243,6 +254,10 @@ export class WorkList {
         ),
       // A saved record means the Shift exists again, if a delete got there first.
       this.db.prepare("UPDATE shifts SET deleted_at = NULL WHERE id = ?").bind(shiftId),
+      // A later segment can carry the Scheduled Shift's id the first didn't (#24).
+      this.db
+        .prepare("UPDATE shifts SET scheduler_shift_id = COALESCE(scheduler_shift_id, ?) WHERE id = ?")
+        .bind(a.schedulerShiftId ?? null, shiftId),
       this.db
         .prepare(
           `INSERT INTO shift_segments (time_activity_id, shift_id, start_at, end_at) VALUES (?, ?, ?, ?)
@@ -337,6 +352,13 @@ export class WorkList {
       if (!pair) return;
       await this.db.batch([
         this.db.prepare("UPDATE shift_segments SET shift_id = ? WHERE shift_id = ?").bind(pair.keep, pair.fold),
+        // The folded Shift may carry the Scheduled Shift's id the kept one lacks (#24).
+        this.db
+          .prepare(
+            `UPDATE shifts SET scheduler_shift_id = COALESCE(scheduler_shift_id, (SELECT scheduler_shift_id FROM shifts WHERE id = ?1))
+             WHERE id = ?2`,
+          )
+          .bind(pair.fold, pair.keep),
         this.db.prepare("DELETE FROM shifts WHERE id = ?").bind(pair.fold),
         ...this.#refreshTimes(pair.keep, graceSeconds),
       ]);
@@ -351,7 +373,10 @@ export class WorkList {
    *  - otherwise at its last segment's end.
    * Once it has an end, its Grace Period is timed from that end; a Shift
    * already in its Grace Period keeps the length it was given. One that loses
-   * its end (a break started) is open again, with nothing due.
+   * its end (a break started) is open again: with a Scheduled Shift, its
+   * planned end is due to be checked (#24); without one, nothing is due.
+   * A Shift treated as ended at its planned end stays so while it's open; a
+   * real end takes over.
    */
   #refreshTimes(shiftId: string, graceSeconds: number): D1PreparedStatement[] {
     const grace = `CASE WHEN shifts.status = 'grace' THEN shifts.grace_ends_at - shifts.end_at ELSE ?2 END`;
@@ -368,8 +393,12 @@ export class WorkList {
           `UPDATE shifts SET
              end_at = r.end_at,
              grace_ends_at = r.end_at + ${grace},
-             due_at = CASE WHEN r.end_at IS NULL OR shifts.created_at - r.end_at > ?3 THEN NULL ELSE r.end_at + ${grace} END,
-             status = CASE WHEN r.end_at IS NULL THEN 'open' WHEN shifts.created_at - r.end_at > ?3 THEN 'too_late' ELSE 'grace' END
+             due_at = CASE
+               WHEN r.end_at IS NULL THEN ${SCHEDULE_CHECK_DUE}
+               WHEN shifts.created_at - r.end_at > ?3 THEN NULL
+               ELSE r.end_at + ${grace} END,
+             status = CASE WHEN r.end_at IS NULL THEN 'open' WHEN shifts.created_at - r.end_at > ?3 THEN 'too_late' ELSE 'grace' END,
+             ended_by_schedule = 0
            FROM (
              SELECT CASE
                       WHEN EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = ?1 AND end_at IS NULL) THEN NULL
@@ -380,7 +409,9 @@ export class WorkList {
                ON b.start_at = seg.last_end AND b.user_id = (SELECT user_id FROM shifts WHERE id = ?1)
            ) AS r
            WHERE shifts.id = ?1 AND shifts.status IN (${UNCHECKED})
-             AND EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = ?1)`,
+             AND EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = ?1)
+             -- Treated as ended at its planned end (#24): still open, it stays so ended.
+             AND NOT (r.end_at IS NULL AND shifts.ended_by_schedule = 1)`,
         )
         .bind(shiftId, graceSeconds, BACKFILL_CUTOFF_SECONDS),
     ];
@@ -478,6 +509,64 @@ export class WorkList {
       if (lease.meta.changes === 1) taken.push(toShift(r));
     }
     return taken;
+  }
+
+  /**
+   * The open Shift's Scheduled Shift plans to end at `plannedEnd`, still
+   * ahead: check again then, as an Admin may move it (#24).
+   */
+  async checkScheduleAt(shiftId: string, plannedEnd: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE shifts SET due_at = ?1, scheduled_end_at = ?1, lease_until = NULL WHERE id = ?2 AND status = 'open'")
+      .bind(plannedEnd, shiftId)
+      .run();
+  }
+
+  /** The open Shift's Scheduled Shift isn't found (#24): it waits for the real clock-out. */
+  async noScheduledShift(shiftId: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE shifts SET scheduler_shift_id = NULL, scheduled_end_at = NULL, due_at = NULL, lease_until = NULL WHERE id = ? AND status = 'open'",
+      )
+      .bind(shiftId)
+      .run();
+  }
+
+  /**
+   * Still open at its Scheduled Shift's planned end (#24): treat it as ending
+   * then. Its Grace Period runs from the planned end, and the 24-hour rule
+   * applies to it as to a recorded end.
+   */
+  async endBySchedule(shiftId: string, plannedEnd: number, graceSeconds: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE shifts SET
+           end_at = ?1, scheduled_end_at = ?1, ended_by_schedule = 1, grace_ends_at = ?1 + ?2, lease_until = NULL,
+           due_at = CASE WHEN created_at - ?1 > ?4 THEN NULL ELSE ?1 + ?2 END,
+           status = CASE WHEN created_at - ?1 > ?4 THEN 'too_late' ELSE 'grace' END
+         WHERE id = ?3 AND status = 'open'`,
+      )
+      .bind(plannedEnd, graceSeconds, shiftId, BACKFILL_CUTOFF_SECONDS)
+      .run();
+  }
+
+  /**
+   * Whether the Shift is clocked in, on a break it never ended, or ended, by
+   * its segments and manual breaks now (#24): which Reminder it gets.
+   */
+  async openState(shiftId: string): Promise<"clocked_in" | "on_break" | "ended"> {
+    const r = await this.db
+      .prepare(
+        `SELECT
+           EXISTS (SELECT 1 FROM shift_segments WHERE shift_id = ?1 AND end_at IS NULL) AS clocked_in,
+           EXISTS (
+             SELECT 1 FROM manual_breaks b JOIN shifts s ON s.id = ?1 AND b.user_id = s.user_id
+             WHERE b.end_at IS NULL AND b.start_at = (SELECT MAX(end_at) FROM shift_segments WHERE shift_id = ?1)
+           ) AS on_break`,
+      )
+      .bind(shiftId)
+      .first<{ clocked_in: number; on_break: number }>();
+    return r?.clocked_in ? "clocked_in" : r?.on_break ? "on_break" : "ended";
   }
 
   /** Hold the Shift's Escalation for Quiet Hours, until `releaseAt` (#29). */
@@ -1284,5 +1373,7 @@ function toShift(r: Record<string, unknown>): ShiftRow {
     attempts: Number(r.attempts ?? 0),
     failingSince: r.failing_since === null || r.failing_since === undefined ? null : Number(r.failing_since),
     held: Number(r.held ?? 0) === 1,
+    schedulerShiftId: r.scheduler_shift_id == null ? null : String(r.scheduler_shift_id),
+    endedBySchedule: Number(r.ended_by_schedule ?? 0) === 1,
   };
 }

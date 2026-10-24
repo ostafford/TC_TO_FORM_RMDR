@@ -9,8 +9,21 @@ import { retryWait } from "./backoff.js";
 import { causedByBlock } from "./blocks.js";
 import type { DueStepDeps } from "./dueSteps.js";
 
-/** held: waiting for a block to lift. quiet: an Escalation held for Quiet Hours (#29). */
-export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "given_up" | "skipped" | "deferred" | "held" | "quiet";
+/**
+ * held: waiting for a block to lift. quiet: an Escalation held for Quiet Hours
+ * (#29). scheduled: an open Shift checked against its Scheduled Shift (#24).
+ */
+export type StepResult =
+  | "submitted"
+  | "reminded"
+  | "escalated"
+  | "retry"
+  | "given_up"
+  | "skipped"
+  | "deferred"
+  | "held"
+  | "quiet"
+  | "scheduled";
 
 /** What a step gives up on once its waits are used up (#33), given the last failure's status. */
 export type GiveUp = (status: number | null) => Promise<StepResult>;
