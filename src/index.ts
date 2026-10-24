@@ -7,6 +7,7 @@ import { DEFAULT_SCHEME, verifyWebhookSignature } from "./connecteam/signature.j
 import { runDueSteps } from "./cron/dueSteps.js";
 import { creditSubmission } from "./crediting/credit.js";
 import { creditRules, readSettings, type Env } from "./env.js";
+import { relaySender } from "./relay/send.js";
 import { WorkList } from "./store.js";
 import { isFormsDelivery, parseFormSubmissionDelivery } from "./webhook/formSubmission.js";
 import { isTaskDelivery, parseTaskDelivery } from "./webhook/task.js";
@@ -17,6 +18,8 @@ export interface WorkerOptions {
   fetchImpl?: typeof fetch;
   /** When a webhook arrives, in Unix seconds. Tests set it; the 24-hour rule (#22) reads it. */
   now?: () => number;
+  /** Where Integrator Relay pushes go (#36). Tests put a recorder here. */
+  relayFetch?: typeof fetch;
 }
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify(event));
@@ -124,12 +127,15 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
         customPublisherId: s.publisherId,
         ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
       });
+      const now = Math.floor(controller.scheduledTime / 1000);
+      const relayOpts = { now, log, ...(opts.relayFetch ? { fetchImpl: opts.relayFetch } : {}) };
       const result = await runDueSteps({
         store: new WorkList(env.DB),
         ct,
         settings: s,
-        now: Math.floor(controller.scheduledTime / 1000),
+        now,
         log,
+        ...(s.relay ? { relay: relaySender(s.relay, relayOpts) } : {}),
       });
       log({ evt: "cron", ...result });
     },

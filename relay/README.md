@@ -8,7 +8,9 @@ It is not shared with EH_Webhook; it started as a copy of EH_Webhook's
 A Deployment with `INTEGRATOR_RELAY_URL` set (#36) sends it:
 
 - `{ kind: "alert", client, condition, state: "raised" | "cleared", text, at }`:
-  every Failure Alert and all clear, with the text the Alerts Channel gets.
+  every Failure Alert and all clear, with the Alerts Channel's text but counts
+  in place of staff names: this repo is public, and so are its issues. The
+  client slug is in every issue title, so pick one you're happy to make public.
 - `{ kind: "check_in", client, at }`: once a day.
 
 The relay turns those into **GitHub issues on this repo**, so the integrator

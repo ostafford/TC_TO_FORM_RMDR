@@ -20,7 +20,14 @@
  * doesn't repeat itself; while it's held back, sends given up on or skipped
  * still reach the client in the next all clear. With the API key rejected,
  * no post can get through Connecteam; the alert stays owed, and the all clear
- * reports once the key works (the Integrator Relay, #36, is the other way out).
+ * reports once the key works.
+ *
+ * With the Integrator Relay set up (#36), each condition is also sent there:
+ * once when it's raised, whether or not the Alerts Channel post got through
+ * (that's the point: it reaches the integrator when Connecteam can't), and
+ * once when it clears. Claimed apart from the channel post, so a relay that
+ * fails never blocks or repeats the post, and is tried again next run. The
+ * relay's issues are on a public repo, so it gets counts, never staff names.
  */
 import {
   allClear,
@@ -58,8 +65,12 @@ export interface AlertResult {
   failed: number;
 }
 
-/** Where a condition stands this run: the alert's text, recovered, or neither (still settling). */
-type Standing = { alert: string } | "recovered" | "neither";
+/**
+ * Where a condition stands this run: the alert's text, recovered, or neither
+ * (still settling). `relayed` is the text for the Integrator Relay when it
+ * differs: without staff names, as its issues are on a public repo (#36).
+ */
+type Standing = { alert: string; relayed?: string } | "recovered" | "neither";
 
 export async function runFailureAlerts(deps: DueStepDeps): Promise<AlertResult> {
   const { store, now } = deps;
@@ -106,15 +117,28 @@ async function evaluate(
     } else if (opts.quietWhenHeld) {
       await store.raiseQuietly(condition);
     }
-    return;
+    return relay(condition, "raised", standing.relayed ?? standing.alert, deps);
   }
   const claim = await store.claimAllClear(condition, now);
-  if (!claim) return;
+  const text = await (claim ? allClearOnce(condition, claim, deps, result) : null);
+  // A retry, the all clear's own text gone, says the plain one.
+  await relay(condition, "cleared", text ?? allClear({ recovered: condition, sends: [] }), deps);
+}
+
+/** Post the claimed all clear. Returns its text for the relay (no names), or `null` when its post failed. */
+async function allClearOnce(
+  condition: AlertCondition,
+  claim: { quiet: boolean },
+  deps: DueStepDeps,
+  result: AlertResult,
+): Promise<string | null> {
+  const { store, now } = deps;
   const sends = await store.openUndelivered(condition);
+  const relayed = allClear({ recovered: condition, sends, anonymous: true });
   if (claim.quiet && sends.length === 0) {
     // The client never heard of it, and nothing was missed: nothing to say.
     await store.allClearPosted(condition, [], now);
-    return;
+    return relayed;
   }
   if (await post(condition, "all_clear", allClear({ recovered: condition, sends }), deps, result)) {
     await store.allClearPosted(
@@ -122,7 +146,21 @@ async function evaluate(
       sends.map((s) => s.sendKey),
       now,
     );
-  } else await store.releaseAllClear(condition);
+    return relayed;
+  }
+  await store.releaseAllClear(condition);
+  return null;
+}
+
+/**
+ * Tell the relay, once per change (#36). The claim only succeeds while the
+ * condition is in that state for the Alerts Channel, so a held-back alert
+ * that stayed clear isn't relayed, and an all clear whose post failed (still
+ * raised) waits for its retry.
+ */
+async function relay(condition: AlertCondition, to: "raised" | "cleared", text: string, deps: DueStepDeps): Promise<void> {
+  if (!deps.relay || !(await deps.store.claimRelay(condition, to))) return;
+  if (!(await deps.relay({ kind: "alert", condition, state: to, text }))) await deps.store.releaseRelay(condition, to);
 }
 
 /** Sends given up on, and nothing gone out since: alert, listing them. */
@@ -131,13 +169,14 @@ async function messages(deps: DueStepDeps, result: AlertResult): Promise<void> {
   if (!(await store.sendsFailing())) return evaluate("messages", "recovered", deps, result);
   const sends = await store.openUndelivered("messages");
   const latest = sends[sends.length - 1]!;
-  const alert = messagesNotSending({
+  const input = {
     sinceMinutes: Math.floor((now - Math.min(...sends.map((s) => s.failingSince))) / 60),
     cause: failureCause(latest),
     sends,
-  });
+  };
+  const standing = { alert: messagesNotSending(input), relayed: messagesNotSending({ ...input, anonymous: true }) };
   // Held back: no alert, but the all clear will list these.
-  await evaluate("messages", { alert }, deps, result, { quietWhenHeld: true });
+  await evaluate("messages", standing, deps, result, { quietWhenHeld: true });
 }
 
 async function sweep(deps: DueStepDeps): Promise<Standing> {

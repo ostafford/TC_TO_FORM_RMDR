@@ -147,10 +147,16 @@ export type { AlertCondition };
 
 /**
  * Small values the Worker keeps (worker_state): the sweep's (#32), when its
- * reads started failing and the last failure's status (#33), and the daily
- * allowance left (#34).
+ * reads started failing and the last failure's status (#33), the daily
+ * allowance left (#34), and when the last check-in went to the relay (#36).
  */
-export type StateKey = "clocks_listed_at" | "day_limit" | "read_failing_since" | "read_failing_status" | "day_remaining";
+export type StateKey =
+  | "clocks_listed_at"
+  | "day_limit"
+  | "read_failing_since"
+  | "read_failing_status"
+  | "day_remaining"
+  | "checked_in_at";
 
 /** What the lost-webhook alert reads (#34). */
 export interface WebhookHealth {
@@ -905,6 +911,57 @@ export class WorkList {
       this.db.prepare("UPDATE failure_alerts SET state = 'clear' WHERE condition = ? AND state = 'clearing'").bind(condition),
       ...sendKeys.map((k) => this.db.prepare("UPDATE undelivered SET cleared_at = ? WHERE send_key = ?").bind(now, k)),
     ]);
+  }
+
+  /**
+   * Claim telling the Integrator Relay the condition is raised or cleared
+   * (#36), before the send. `false` when the relay already knows, or the
+   * condition isn't (or is no longer) in that state for the Alerts Channel.
+   */
+  async claimRelay(condition: AlertCondition, to: "raised" | "cleared"): Promise<boolean> {
+    const r = await this.db
+      .prepare(
+        to === "raised"
+          ? "UPDATE failure_alerts SET relayed = 1 WHERE condition = ? AND relayed = 0 AND state IN ('alerting', 'raised')"
+          : "UPDATE failure_alerts SET relayed = 0 WHERE condition = ? AND relayed = 1 AND state = 'clear'",
+      )
+      .bind(condition)
+      .run();
+    return r.meta.changes === 1;
+  }
+
+  /** The relay didn't take it: the next run tries again. */
+  async releaseRelay(condition: AlertCondition, to: "raised" | "cleared"): Promise<void> {
+    await this.db
+      .prepare("UPDATE failure_alerts SET relayed = ? WHERE condition = ?")
+      .bind(to === "raised" ? 0 : 1, condition)
+      .run();
+  }
+
+  /**
+   * Claim the daily check-in (#36): due when none went out in the last
+   * `everySeconds`. Returns the previous check-in's time (`null` for never)
+   * to put back if the send fails, or `false` when it isn't due.
+   */
+  async claimCheckIn(now: number, everySeconds: number): Promise<{ previous: number | null } | false> {
+    const previous = await this.state("checked_in_at");
+    if (previous !== null && now - previous < everySeconds) return false;
+    const r = await this.db
+      .prepare(
+        `INSERT INTO worker_state (key, value) VALUES ('checked_in_at', ?1)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value WHERE worker_state.value <= ?2`,
+      )
+      .bind(now, now - everySeconds)
+      .run();
+    return r.meta.changes === 1 ? { previous } : false;
+  }
+
+  /** The check-in didn't reach the relay: due again next run. */
+  async releaseCheckIn(previous: number | null): Promise<void> {
+    await (previous === null
+      ? this.db.prepare("DELETE FROM worker_state WHERE key = 'checked_in_at'")
+      : this.db.prepare("UPDATE worker_state SET value = ? WHERE key = 'checked_in_at'").bind(previous)
+    ).run();
   }
 
   /** The all clear's post failed: still raised, so the next run tries again. */
