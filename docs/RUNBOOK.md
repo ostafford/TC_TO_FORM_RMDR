@@ -6,8 +6,9 @@ NAME` to rerun one step) does these steps for you; this page is the manual
 equivalent and the reference for what the wizard does. So far the wizard
 covers the Cloudflare account and the Connecteam API key (#37), and the
 time zone, Compliance Form, Shift Date Question, "where to find it" phrase,
-Grace Period, escalation delay and Quiet Hours (#38); the rest arrives with
-#39 to #41.
+Grace Period, escalation delay and Quiet Hours (#38), and the escalation
+recipients, Reminder Task, sender, Alerts Channel, support link and the
+Shift Entry tip (#39); the rest arrives with #40 and #41.
 
 ## Deploying
 

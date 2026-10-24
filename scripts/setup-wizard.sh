@@ -219,8 +219,8 @@ ENV_FILE="${WIZARD_ENV_FILE:-.dev.vars}"
 
 # Every step in the order setup runs them, and the ones --step can rerun (#19).
 STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test)
-# Built so far; the rest arrive with #39 to #41.
-BUILT_STEPS=(key timezone form timings quiet-hours)
+# Built so far; the rest arrive with #40 and #41.
+BUILT_STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts)
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   RED=$(tput setaf 1)
@@ -318,6 +318,19 @@ choose() {
       return 0
     fi
     fail "Type a number from the list."
+  done
+}
+
+# ask_yn VAR "Question" DEFAULT: y or n into $VAR; Enter takes DEFAULT (y or n).
+ask_yn() {
+  local _v="$1" _q="$2" _d="$3" _a
+  while :; do
+    ask_default _a "$_q (y/n)" "$_d" || return 1
+    case "$_a" in
+      [Yy]*) printf -v "$_v" y; return 0 ;;
+      [Nn]*) printf -v "$_v" n; return 0 ;;
+    esac
+    fail "Type y or n."
   done
 }
 
@@ -649,12 +662,8 @@ s_quiet() {
   qfrom=$(saved_or QUIET_HOURS_FROM "$DEFAULT_QUIET_FROM")
   quntil=$(saved_or QUIET_HOURS_UNTIL "$DEFAULT_QUIET_UNTIL")
   example_from_helper quiet-example "$grace" "$delay" "$qfrom" "$quntil"
-  while :; do
-    ask_default input "Use quiet hours? (y/n)" "$([[ "$on" == false ]] && echo n || echo y)" || { fail "No answer given."; exit 1; }
-    [[ "$input" =~ ^[YyNn] ]] && break
-    fail "Type y or n."
-  done
-  if [[ "$input" =~ ^[Nn] ]]; then
+  ask_yn input "Use quiet hours?" "$([[ "$on" == false ]] && echo n || echo y)" || { fail "No answer given."; exit 1; }
+  if [[ "$input" == n ]]; then
     save QUIET_HOURS_ENABLED false "quiet hours (off)"
     warn "Escalations will go out at any hour, day or night."
     next_up "who receives escalations."
@@ -686,6 +695,239 @@ s_quiet() {
   next_up "who receives escalations."
 }
 
+# Admins (user id <tab> label) and the direct-manager line, from `helper people`.
+read_people() {
+  local rc=0
+  helper people || rc=$?
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  ADMIN_IDS=(); ADMIN_LABELS=()
+  local id label
+  while IFS=$'\t' read -r id label; do ADMIN_IDS+=("$id"); ADMIN_LABELS+=("$label"); done < <(grep '^admin' <<<"$HELPER_OUT" | cut -f2-)
+  DIRECT_LINE=$(grep '^direct' <<<"$HELPER_OUT" | cut -f2- || true)
+}
+
+# ticked_admins: the listed Admins not in the saved EXCLUDED_ADMIN_IDS, comma-separated.
+ticked_admins() {
+  local excl=",$(saved_or EXCLUDED_ADMIN_IDS "" | tr -d ' ')," out="" id
+  for id in "${ADMIN_IDS[@]}"; do [[ "$excl" == *",$id,"* ]] || out+="${out:+,}$id"; done
+  printf '%s' "$out"
+}
+
+s_recipients() {
+  stage "Who receives escalations"
+  why "Every admin in your Connecteam account receives escalations, plus the" \
+      "employee's direct manager. Untick anyone who shouldn't be on every one." \
+      "New admins are included automatically. An unticked admin still hears about" \
+      "their own direct reports."
+  todo "Check the list: everyone ticked (✔) gets escalations." \
+       "Type a number to untick someone, or to tick them again. Press Enter when the list is right."
+  example "The owner doesn't work with shift staff: type their number to untick them, then press Enter."
+  need_key
+  read_people
+  ok "$DIRECT_LINE"
+  # Unticked user ids, space-padded so " id " finds one. Saved ids no longer
+  # Admins drop out here.
+  local excl=" " saved_ids e i n kept
+  saved_ids=$(saved_or EXCLUDED_ADMIN_IDS "")
+  for e in ${saved_ids//,/ }; do
+    for i in "${!ADMIN_IDS[@]}"; do [[ "${ADMIN_IDS[$i]}" == "$e" ]] && excl+="$e "; done
+  done
+  while :; do
+    printf '\n  Admins (✔ = receives escalations):\n'
+    for i in "${!ADMIN_IDS[@]}"; do
+      if [[ "$excl" == *" ${ADMIN_IDS[$i]} "* ]]; then e=" "; else e="✔"; fi
+      printf '    %s%3d)%s [%s] %s\n' "$BLUE" "$((i + 1))" "$RESET" "$e" "${ADMIN_LABELS[$i]}"
+    done
+    ask_default n "Number to untick or tick, or Enter when done:" "" || n=""
+    [[ -z "$n" ]] && break
+    if ! [[ "$n" =~ ^[0-9]+$ ]] || (( 10#$n < 1 || 10#$n > ${#ADMIN_IDS[@]} )); then
+      fail "Type a number from the list, or press Enter when done."
+      continue
+    fi
+    e="${ADMIN_IDS[$((10#$n - 1))]}"
+    if [[ "$excl" == *" $e "* ]]; then excl="${excl/ $e / }"; else excl+="$e "; fi
+    kept=0
+    for i in "${!ADMIN_IDS[@]}"; do [[ "$excl" == *" ${ADMIN_IDS[$i]} "* ]] || kept=$((kept + 1)); done
+    if (( kept == 0 )); then
+      warn "At least one admin must stay ticked, or escalations would reach nobody."
+      excl="${excl/ $e / }"
+    fi
+  done
+  local list="" ticked=0
+  for i in "${!ADMIN_IDS[@]}"; do
+    if [[ "$excl" == *" ${ADMIN_IDS[$i]} "* ]]; then list+="${list:+,}${ADMIN_IDS[$i]}"; else ticked=$((ticked + 1)); fi
+  done
+  save EXCLUDED_ADMIN_IDS "$list" "the escalation recipients ($ticked of ${#ADMIN_IDS[@]} admins)"
+  next_up "the reminder task."
+}
+
+s_task() {
+  stage "Reminder task (on by default)"
+  why "With the chat reminder, the employee also gets a task in their Connecteam" \
+      "task list, so it stays visible after the message scrolls away. It ticks" \
+      "itself off once the form arrives. Ticking it by hand doesn't count, and the" \
+      "employee is told so."
+  todo "Choose whether to create reminder tasks." \
+       "If yes, pick the task board they go on."
+  example "On the \"Compliance follow-ups\" board, Jordan sees a task named after the" \
+          "form and the shift's day, until the form arrives."
+  local on rc ids=() names=() id name current def="" i n
+  ask_yn on "Create reminder tasks?" "$([[ "$(saved_or REMINDER_TASK_ENABLED true)" == false ]] && echo n || echo y)" \
+    || { fail "No answer given."; exit 1; }
+  if [[ "$on" == n ]]; then
+    save REMINDER_TASK_ENABLED false "the reminder task (off)"
+    next_up "the sender name staff will see."
+    return
+  fi
+  need_key
+  while :; do
+    rc=0; helper boards || rc=$?
+    (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+    [[ -n "$HELPER_OUT" ]] && break
+    warn_long "There's no task board in use. Add one in Connecteam (Tasks), then press Enter here to look again."
+    read -r _ || { fail "No task board to use."; exit 1; }
+  done
+  while IFS=$'\t' read -r id name; do ids+=("$id"); names+=("$name"); done <<<"$HELPER_OUT"
+  current=$(_existing TASK_BOARD_ID || true)
+  for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$current" ]] && def=$((i + 1)); done
+  (( ${#ids[@]} == 1 )) && def=1
+  printf '\n  Task boards:\n'
+  choose n "Which board should the tasks go on? (number)" "$def" 1 "${names[@]}" || { fail "No board chosen."; exit 1; }
+  save REMINDER_TASK_ENABLED true "the reminder task (on)"
+  save TASK_BOARD_ID "${ids[$((n - 1))]}" "the task board (\"${names[$((n - 1))]}\")"
+  next_up "the sender name staff will see."
+}
+
+s_sender() {
+  stage "Sender name"
+  why "Every message comes from this sender (a \"custom publisher\" in Connecteam)." \
+      "Its name is the first thing staff see, so it should say the message is" \
+      "automated, not from a person."
+  todo "In Connecteam, open Settings > Feed settings > Custom publishers." \
+       "Create one with a name like the example below, and save it." \
+       "Come back here and type its publisher ID, or its number in the list below."
+  example "Compliance Reminders (Automated)"
+  need_key
+  local rc ids=() names=() id name input i pick current
+  current=$(_existing CT_PUBLISHER_ID || true)
+  while :; do
+    rc=0; helper publishers || rc=$?
+    (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+    ids=(); names=()
+    if [[ -n "$HELPER_OUT" ]]; then
+      while IFS=$'\t' read -r id name; do ids+=("$id"); names+=("$name"); done <<<"$HELPER_OUT"
+      printf '\n  Custom publishers in your account:\n'
+      for i in "${!ids[@]}"; do printf '    %s%3d)%s %s %s(ID %s)%s\n' "$BLUE" "$((i + 1))" "$RESET" "${names[$i]}" "$DIM" "${ids[$i]}" "$RESET"; done
+    else
+      note "No custom publishers yet."
+    fi
+    ask_default input "Publisher ID (or its number in the list):" "$current" || { fail "No publisher given."; exit 1; }
+    pick=""
+    for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$input" ]] && pick=$i; done
+    if [[ -z "$pick" && "$input" =~ ^[0-9]+$ ]] && (( 10#$input >= 1 && 10#$input <= ${#ids[@]} )); then pick=$((10#$input - 1)); fi
+    [[ -n "$pick" ]] && break
+    fail "That isn't one of your custom publishers. Created it just now? It's listed again below."
+  done
+  if ! helper automated "${names[$pick]}"; then
+    warn_long "\"${names[$pick]}\" doesn't say it's automated, so staff may think a person wrote to them. Consider renaming it in Connecteam, then rerun: npm run setup -- --step sender"
+  fi
+  save CT_PUBLISHER_ID "${ids[$pick]}" "the sender (\"${names[$pick]}\")"
+  write_env CT_PUBLISHER_NAME "${names[$pick]}" >/dev/null
+  next_up "where problems are reported."
+}
+
+s_alerts() {
+  stage "Alerts channel"
+  why "If the reminder itself has a problem (Connecteam is down, the key stops" \
+      "working, the form is deleted), it posts here, once per problem, with what" \
+      "to do. This is about the system, never about staff."
+  todo "Pick the chat to post problems to, or 0 to create a new channel for them." \
+       "A new channel's members are the admins ticked in the escalations step."
+  example "In \"Form Reminder Alerts\": \"ALERT · FORM NOT FOUND … Action: rerun setup" \
+          "step \"Compliance Form\".\""
+  need_key
+  local rc ids=() labels=() id label current def=0 i n title members count
+  rc=0; helper channels || rc=$?
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  [[ -z "$HELPER_OUT" ]] || while IFS=$'\t' read -r id label; do ids+=("$id"); labels+=("$label"); done <<<"$HELPER_OUT"
+  current=$(_existing ALERTS_CHANNEL_ID || true)
+  for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$current" ]] && def=$((i + 1)); done
+  while :; do
+    printf '\n  Chats in your account:\n'
+    choose n "Which chat? (number, or 0 to create a new channel)" "$def" 0 ${labels[@]+"${labels[@]}"} \
+      || { fail "No chat chosen."; exit 1; }
+    if (( n > 0 )); then
+      save ALERTS_CHANNEL_ID "${ids[$((n - 1))]}" "the alerts channel (${labels[$((n - 1))]})"
+      break
+    fi
+    ask_default title "Name of the new channel:" "Form Reminder Alerts" || { fail "No name given."; exit 1; }
+    read_people
+    members=$(ticked_admins)
+    [[ -n "$members" ]] || members=$(IFS=,; printf '%s' "${ADMIN_IDS[*]}")
+    count=$(tr ',' '\n' <<<"$members" | wc -l | tr -d ' ')
+    confirm "Create \"$title\" with $count admin(s) as members? They'll see it in their Connecteam chat." || continue
+    if helper create-channel "$title" "$members"; then
+      save ALERTS_CHANNEL_ID "$HELPER_OUT" "the alerts channel (\"$title\", new)"
+      break
+    fi
+    fail "$HELPER_OUT"
+  done
+  next_up "the optional support link."
+}
+
+s_relay() {
+  stage "Support link (optional)"
+  why "If your integrator supports this setup for you, problems are also sent to" \
+      "them directly, even when Connecteam itself can't deliver them, plus a daily" \
+      "\"still running\" check. Staff names are never sent, only counts."
+  todo "Answer y only if your integrator gave you a support link." \
+       "Then paste the link, the short name they gave you, and the secret."
+  example "Link: https://clock-out-relay.example.workers.dev" \
+          "Name: acme-cleaning (it appears in your integrator's issue titles, which are public)"
+  local on input url slug
+  ask_yn on "Send problems to your integrator as well?" "$([[ -n "$(saved_or INTEGRATOR_RELAY_URL "")" ]] && echo y || echo n)" \
+    || { fail "No answer given."; exit 1; }
+  if [[ "$on" == n ]]; then
+    write_env INTEGRATOR_RELAY_URL "" >/dev/null
+    write_env INTEGRATOR_CLIENT_SLUG "" >/dev/null
+    write_env INTEGRATOR_RELAY_SECRET "" >/dev/null
+    ok "Saved: no support link."
+    next_up "a tip about Connecteam's own clock-out question."
+    return
+  fi
+  while :; do
+    ask_default input "Support link:" "$(saved_or INTEGRATOR_RELAY_URL "")" || { fail "No link given."; exit 1; }
+    if helper relay-url "$input"; then url="$HELPER_OUT"; break; fi
+    fail "$HELPER_OUT"
+  done
+  while :; do
+    ask_default input "Your name for them:" "$(saved_or INTEGRATOR_CLIENT_SLUG "")" || { fail "No name given."; exit 1; }
+    if helper slug "$input"; then slug="$HELPER_OUT"; break; fi
+    fail "$HELPER_OUT"
+  done
+  while :; do
+    ask_secret INTEGRATOR_RELAY_SECRET "Paste the secret (it won't show):" || { fail "No secret given."; exit 1; }
+    [[ -n "$INTEGRATOR_RELAY_SECRET" ]] && break
+    fail "The secret can't be blank. Your integrator gives you it with the link."
+  done
+  write_env INTEGRATOR_RELAY_URL "$url" >/dev/null
+  write_env INTEGRATOR_CLIENT_SLUG "$slug" >/dev/null
+  save INTEGRATOR_RELAY_SECRET "$INTEGRATOR_RELAY_SECRET" "the support link ($slug)"
+  next_up "a tip about Connecteam's own clock-out question."
+}
+
+s_tip() {
+  stage "Tip: a clock-out question in Connecteam (optional)"
+  why "Connecteam can ask staff a required question before they clock out, such as" \
+      "\"Have you submitted the compliance form?\". It's only their word, so this" \
+      "reminder still checks for the real form, but it's a useful nudge at the" \
+      "right moment."
+  todo "If you'd like one: in Connecteam, open Time Clock > Settings > Shift Entries, and add a required question under \"During shift or before clocking out\"."
+  example "\"Have you submitted the ${FORM_NAME:-compliance form}?\" with the answers Yes and No."
+  note "Nothing to enter here."
+  pause "Press Enter to continue"
+}
+
 # Each built step by --step name, and how many stages it shows.
 run_step() {
   case "$1" in
@@ -694,12 +936,16 @@ run_step() {
     form) s_form; s_dateq; s_where ;;
     timings) s_grace; s_delay ;;
     quiet-hours) s_quiet ;;
+    recipients) s_recipients ;;
+    reminder-task) s_task ;;
+    sender) s_sender ;;
+    alerts) s_alerts; s_relay ;;
   esac
 }
 step_stages() {
   case "$1" in
     form) echo 3 ;;
-    timings) echo 2 ;;
+    timings | alerts) echo 2 ;;
     *) echo 1 ;;
   esac
 }
@@ -773,7 +1019,7 @@ if [[ -n "$ONLY" ]]; then
   return
 fi
 
-TOTAL_STAGES=9
+TOTAL_STAGES=15
 banner "Clock-out Form Reminder: setup"
 s_cloudflare
 s_key
@@ -781,10 +1027,15 @@ s_timezone
 s_form; s_dateq; s_where
 s_grace; s_delay
 s_quiet
+s_recipients
+s_task
+s_sender
+s_alerts; s_relay
+s_tip
 finish
-note "This version of the wizard ends here: the remaining steps (escalation"
-note "recipients onward) arrive with #39 to #41. Until then, fill in the rest of"
-note "$ENV_FILE by hand, following docs/RUNBOOK.md."
+note "This version of the wizard ends here: the summary, \"Turn it on\" and the"
+note "test message arrive with #40. Until then, add the webhook secret and the"
+note "database id to $ENV_FILE and deploy by hand, following docs/RUNBOOK.md."
 }
 
 run_wizard "$@"; exit

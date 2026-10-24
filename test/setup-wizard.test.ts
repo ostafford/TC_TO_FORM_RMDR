@@ -1,8 +1,8 @@
 /**
- * The setup wizard (#37, #38), driven as a person would: the real script
+ * The setup wizard (#37 to #39), driven as a person would: the real script
  * with typed input, no browser, and a fake Connecteam on localhost answering
- * in the shapes the live API sends (rate-limit headers, time clock settings
- * and forms, tested live 2026-10-24). The Cloudflare step needs a person and
+ * in the shapes the live API sends (rate-limit headers, time clock settings,
+ * forms, users, publishers, task boards and chats, tested live 2026-10-24). The Cloudflare step needs a person and
  * a real account, so only its entry points are checked here.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
@@ -51,10 +51,40 @@ const FORMS = [
   { formId: 503, formName: "Weekly Site Audit", settings: settings({ limitEntriesPerUser: { enabled: true, limitEntriesPerUser: 1 } }), questions: [] },
 ];
 
+const dm = (id: number | null) => ({ customFieldId: 9, name: "Direct manager", type: "directManager", value: id });
+const USERS = [
+  { userId: 1, firstName: "Okky", lastName: "Stafford", userType: "owner", isArchived: false, customFields: [dm(null)] },
+  { userId: 2, firstName: "Priya", lastName: "Shah", userType: "manager", isArchived: false, customFields: [dm(1)] },
+  { userId: 3, firstName: "Marcus", lastName: "Webb", userType: "manager", isArchived: false, customFields: [dm(1)] },
+  { userId: 4, firstName: "Gone", lastName: "Admin", userType: "manager", isArchived: true, customFields: [] },
+  { userId: 5, firstName: "Jordan", lastName: "Lee", userType: "user", isArchived: false, customFields: [dm(2)] },
+  { userId: 6, firstName: "Invited", lastName: "Admin", userType: "user", invitedToBeManager: true, isArchived: false, customFields: [dm(null)] },
+];
+let boards = [
+  { id: 701, name: "Task Management", isArchived: false },
+  { id: 702, name: "Old board", isArchived: true },
+  { id: 703, name: "Compliance follow-ups", isArchived: false },
+];
+const PUBLISHERS = [
+  { id: 2040969, name: "Implementation Publisher", imageUrl: "" },
+  { id: 2480518, name: "Compliance Reminders (Automated)", imageUrl: "" },
+];
+// Twelve chats: more than the 10 a page Connecteam sends unless asked.
+const CHATS = Array.from({ length: 12 }, (_, i) => ({
+  id: `chat-${i + 1}`,
+  title: i === 11 ? "Managers" : `Team ${i + 1}`,
+  type: i === 11 ? "channel" : "team",
+}));
+/** What POST /chat/v1/conversations was sent, and whether it's refused (as for a non-owner key, per the docs). */
+const created: unknown[] = [];
+let createStatus = 200;
+
 beforeAll(async () => {
-  server = createServer((req, res) => {
+  server = createServer(async (req, res) => {
     seenKeys.push(String(req.headers["x-api-key"] ?? ""));
     const url = new URL(req.url ?? "/", "http://fake");
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
     const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
       res.writeHead(status, { "content-type": "application/json", ...headers });
       res.end(JSON.stringify(body));
@@ -80,6 +110,29 @@ beforeAll(async () => {
     if (form) {
       const f = FORMS.find((x) => x.formId === Number(form[1]));
       return f ? send(200, { data: f }) : send(404, { detail: "Not Found" });
+    }
+    const page = <T,>(rows: T[], fallback = 10) => {
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      const limit = Number(url.searchParams.get("limit") ?? fallback);
+      return { rows: rows.slice(offset, offset + limit), paging: { offset: Math.min(offset + limit, rows.length) } };
+    };
+    if (url.pathname === "/users/v1/users") {
+      const p = page(USERS);
+      return send(200, { data: { users: p.rows }, paging: p.paging });
+    }
+    if (url.pathname === "/tasks/v1/taskboards") return send(200, { data: { taskBoards: boards } });
+    if (url.pathname === "/publishers/v1/publishers") {
+      const p = page(PUBLISHERS);
+      return send(200, { data: { publishers: p.rows }, paging: p.paging });
+    }
+    if (url.pathname === "/chat/v1/conversations" && req.method === "POST") {
+      created.push(JSON.parse(raw));
+      if (createStatus !== 200) return send(createStatus, { detail: "Forbidden" });
+      return send(200, { data: { conversation: { id: "chat-new", ...JSON.parse(raw) } } });
+    }
+    if (url.pathname === "/chat/v1/conversations") {
+      const p = page(CHATS);
+      return send(200, { data: { conversations: p.rows }, paging: p.paging });
     }
     send(404, { detail: "Not Found" });
   });
@@ -135,9 +188,9 @@ describe("the setup wizard's entry points", () => {
     const unknown = await run(["--step", "nope"]);
     expect(unknown.code).toBe(2);
     expect(unknown.out).toContain("unknown step: nope");
-    const later = await run(["--step", "recipients"]);
+    const later = await run(["--step", "webhook"]);
     expect(later.code).toBe(2);
-    expect(later.out).toContain(`The "recipients" step isn't in this version of the wizard yet.`);
+    expect(later.out).toContain(`The "webhook" step isn't in this version of the wizard yet.`);
   });
 });
 
@@ -364,5 +417,145 @@ describe("step 9, Quiet Hours (--step quiet-hours)", { timeout: SLOW }, () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("10:15 pm   reminder to the employee");
     expect(r.out).toContain("11:15 pm   escalation due → held until 7:00 am");
+  });
+});
+
+describe("step 10, who receives escalations (--step recipients)", { timeout: SLOW }, () => {
+  it("lists every Admin ticked (not archived ones, not invites), says direct managers are used, and saves no one excluded", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "recipients"], "\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Direct managers: found. 1 of 2 staff have one");
+    expect(r.out).toContain("[✔] Marcus Webb");
+    expect(r.out).toContain("[✔] Okky Stafford (owner)");
+    expect(r.out).toContain("[✔] Priya Shah");
+    expect(r.out).not.toContain("Gone Admin");
+    expect(r.out).not.toContain("Invited Admin");
+    expect(saved(env).EXCLUDED_ADMIN_IDS).toBe("");
+  });
+
+  it("unticking excludes; ticking again includes", async () => {
+    const env = envWithKey();
+    // Sorted by name: 1 Marcus, 2 Okky, 3 Priya.
+    const r = await run(["--step", "recipients"], "2\n3\n3\n1\n\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("[ ] Okky Stafford (owner)");
+    expect(r.out).toContain("1 of 3 admins");
+    expect(saved(env).EXCLUDED_ADMIN_IDS).toBe("3,1");
+  });
+
+  it("keeps at least one ticked", async () => {
+    const env = envWithKey("EXCLUDED_ADMIN_IDS='1,2'\n");
+    const r = await run(["--step", "recipients"], "1\n\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("At least one admin must stay ticked");
+    expect(saved(env).EXCLUDED_ADMIN_IDS).toBe("1,2");
+  });
+
+  it("drops a saved exclusion for someone who's no longer an Admin", async () => {
+    const env = envWithKey("EXCLUDED_ADMIN_IDS='4,2'\n");
+    const r = await run(["--step", "recipients"], "\n", env);
+    expect(r.code).toBe(0);
+    expect(saved(env).EXCLUDED_ADMIN_IDS).toBe("2");
+  });
+});
+
+describe("step 11, the Reminder Task (--step reminder-task)", { timeout: SLOW }, () => {
+  it("is on by default, with a board picked from the live ones", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "reminder-task"], "\n2\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("1) Task Management");
+    expect(r.out).not.toContain("Old board");
+    expect(saved(env)).toMatchObject({ REMINDER_TASK_ENABLED: "true", TASK_BOARD_ID: "703" });
+  });
+
+  it("can be turned off without a board", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "reminder-task"], "n\n", env);
+    expect(r.code).toBe(0);
+    expect(saved(env).REMINDER_TASK_ENABLED).toBe("false");
+    expect(saved(env).TASK_BOARD_ID).toBeUndefined();
+  });
+
+  it("with no board in use, says to add one and looks again", async () => {
+    const before = boards;
+    boards = [];
+    const env = envWithKey();
+    const r = await run(["--step", "reminder-task"], "y\n", env);
+    boards = before;
+    expect(r.code).toBe(1);
+    expect(flat(r.out)).toContain("There's no task board in use. Add one in Connecteam (Tasks)");
+  });
+});
+
+describe("step 12, the sender name (--step sender)", { timeout: SLOW }, () => {
+  it("explains the custom publisher, takes its id and saves its name from Connecteam", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "sender"], "2480518\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Settings > Feed settings > Custom publishers");
+    expect(saved(env)).toMatchObject({ CT_PUBLISHER_ID: "2480518", CT_PUBLISHER_NAME: "Compliance Reminders (Automated)" });
+    expect(r.out).not.toContain("doesn't say it's automated");
+  });
+
+  it("takes its number in the list too, and hints when the name doesn't say it's automated", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "sender"], "1\n", env);
+    expect(r.code).toBe(0);
+    expect(flat(r.out)).toContain(`"Implementation Publisher" doesn't say it's automated`);
+    expect(saved(env).CT_PUBLISHER_ID).toBe("2040969");
+  });
+
+  it("refuses an id that isn't a publisher, and lists them again", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "sender"], "999\n2480518\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("That isn't one of your custom publishers.");
+    expect(saved(env).CT_PUBLISHER_ID).toBe("2480518");
+  });
+});
+
+describe("steps 13 and 14, the Alerts Channel and support link (--step alerts)", { timeout: SLOW }, () => {
+  it("picks an existing chat, found past Connecteam's first page, and no support link", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "alerts"], "12\n\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("12) Managers (channel)");
+    expect(r.out).toContain("1) Team 1 (team chat)");
+    expect(saved(env)).toMatchObject({ ALERTS_CHANNEL_ID: "chat-12", INTEGRATOR_RELAY_URL: "", INTEGRATOR_CLIENT_SLUG: "", INTEGRATOR_RELAY_SECRET: "" });
+  });
+
+  it("0 creates a channel whose members are the ticked Admins", async () => {
+    const env = envWithKey("EXCLUDED_ADMIN_IDS='1'\n");
+    created.length = 0;
+    const r = await run(["--step", "alerts"], "0\n\ny\nn\n", env);
+    expect(r.code).toBe(0);
+    expect(created).toEqual([{ title: "Form Reminder Alerts", type: "channel", assignedUserIds: [3, 2] }]);
+    expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-new");
+  });
+
+  it("a refused create explains making it in the app, then a chat can be picked instead", async () => {
+    const env = envWithKey();
+    createStatus = 403;
+    const r = await run(["--step", "alerts"], "0\nAlerts\ny\n12\nn\n", env);
+    createStatus = 200;
+    expect(r.code).toBe(0);
+    expect(flat(r.out)).toContain("that needs an API key made by the account owner");
+    expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-12");
+  });
+
+  it("the support link takes the link, a public-safe name and the secret, never showing the secret", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "alerts"], "12\ny\nhttp://relay.example\nhttps://relay.example.workers.dev/\nAcme Cleaning!\nAcme-Cleaning\nrelay-secret-123\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain(`"http://relay.example" isn't an https:// address.`);
+    expect(r.out).toContain("Use letters, numbers and dashes only");
+    expect(r.out).not.toContain("relay-secret-123");
+    expect(saved(env)).toMatchObject({
+      INTEGRATOR_RELAY_URL: "https://relay.example.workers.dev",
+      INTEGRATOR_CLIENT_SLUG: "acme-cleaning",
+      INTEGRATOR_RELAY_SECRET: "relay-secret-123",
+    });
   });
 });

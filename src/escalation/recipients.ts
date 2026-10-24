@@ -5,8 +5,18 @@
  */
 import type { ConnecteamUser } from "../connecteam/types.js";
 
-/** In the API, `manager` is what the app and the glossary call an Admin; `owner` is one too. */
+/**
+ * In the API, `manager` is what the app and the glossary call an Admin;
+ * `owner` is one too. An Admin invited but not yet accepted is still a `user`
+ * (with `invitedToBeManager: true`, tested live 2026-10-24, #39), so they join
+ * once they accept.
+ */
 const ADMIN_TYPES = new Set(["manager", "owner"]);
+
+/** Whether this user gets Escalations unless excluded: an Admin, not archived. The setup wizard lists the same people (#39). */
+export function isAdmin(u: ConnecteamUser): boolean {
+  return ADMIN_TYPES.has(u.userType ?? "") && !u.isArchived;
+}
 
 /**
  * The employee's direct manager: the value of their custom field whose type is
@@ -39,7 +49,7 @@ export function escalationRecipients(opts: {
 }): number[] {
   const excluded = new Set(opts.excludedAdminIds);
   const ids = opts.users
-    .filter((u) => ADMIN_TYPES.has(u.userType ?? "") && !u.isArchived && !excluded.has(u.userId))
+    .filter((u) => isAdmin(u) && !excluded.has(u.userId))
     .map((u) => u.userId);
   const manager = directManagerId(opts.employee);
   if (manager !== null) ids.push(manager);
