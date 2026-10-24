@@ -1,0 +1,32 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  // This project's Integrator Relay (#35): hosted once by the integrator,
+  // outside every Deployment. Its own config, secrets, deploy and teardown,
+  // kept apart from the Deployment Worker's (../wrangler.jsonc). See README.md.
+  "name": "clock-out-form-reminder-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "observability": { "enabled": true },
+
+  // Secrets, set with `npm run relay:secret -- <NAME>`:
+  //   RELAY_SECRET - the shared x-relay-secret; every Deployment's
+  //                  INTEGRATOR_RELAY_SECRET must equal this.
+  //   GITHUB_TOKEN - a fine-grained PAT with Issues: Read and write on the
+  //                  repo below, nothing else. Lives ONLY here.
+  // Nothing here is account-specific, so this file is the deployed config.
+  "vars": {
+    // owner/name of the repo that receives the issues: this project's own.
+    "GITHUB_REPO": "ostafford/TC_TO_FORM_RMDR",
+    // Optional: also POST a compact alert to this URL (Zapier / Make / an SMTP
+    // bridge) for instant email. Blank = GitHub-issue notifications only.
+    "EMAIL_WEBHOOK_URL": ""
+  },
+
+  // Each Deployment's last check-in. A SQLite-backed Durable Object: created
+  // on deploy, no id to keep, removed with the Worker.
+  "durable_objects": { "bindings": [{ "name": "CHECK_INS", "class_name": "CheckIns" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CheckIns"] }],
+
+  // Hourly: open an issue for any Deployment silent for more than 36 hours.
+  "triggers": { "crons": ["0 * * * *"] }
+}

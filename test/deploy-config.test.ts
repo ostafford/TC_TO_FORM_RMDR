@@ -213,7 +213,9 @@ describe("every deploy path uses the built config, never the template", () => {
   it("npm run deploy and db:migrate check against the live Worker first, then use the built config", () => {
     expect(scripts.deploy).toBe(`tsx scripts/deploy-config.ts --check-live && wrangler deploy ${CFG}`);
     expect(scripts["db:migrate"]).toMatch(/^tsx scripts\/deploy-config\.ts --check-live && wrangler d1 migrations apply /);
-    for (const line of configReaders(Object.values(scripts).join("\n"))) expect(line).toContain(CFG);
+    // The relay (relay:*) has its own config, with nothing account-specific in it (#35).
+    const deployment = Object.entries(scripts).filter(([name]) => !name.startsWith("relay:")).map(([, v]) => v);
+    for (const line of configReaders(deployment.join("\n"))) expect(line).toContain(CFG);
   });
 
   it("the runbook's commands use the built config", () => {
