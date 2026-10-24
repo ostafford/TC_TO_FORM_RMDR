@@ -15,6 +15,15 @@
  *   publishers        custom publishers:               PUBLISHER ID <tab> NAME
  *   channels          chats (not private ones):        CONVERSATION ID <tab> LABEL
  *   create-channel TITLE USER,ID,...   a new channel with those members: its id
+ *   users             active users, for the test:      USER ID <tab> LABEL
+ *
+ * Reading .dev.vars as well (WIZARD_ENV_FILE, else .dev.vars):
+ *   summary           every setting as a summary row, ids turned into names;
+ *                     exit 1 with one line per setting still missing
+ *   webhooks URL      makes Connecteam hold exactly this Deployment's three
+ *                     subscriptions to URL: `updated|created|removed <tab> WHAT`
+ *   test-message USER ID   sends one real Reminder for a sample Shift as the
+ *                     publisher: the message, then exit 0 sent, 4 not sent
  *
  * Checking what the person typed (prints the value as saved, or the problem):
  *   zone TEXT | duration grace|delay TEXT | clock TEXT | where TEXT
@@ -45,6 +54,11 @@ import {
 } from "./lib/wizard-values.js";
 import { formatDuration } from "../src/messages/format.js";
 import type { ConnecteamUser, Conversation } from "../src/connecteam/types.js";
+import { readFileSync } from "node:fs";
+import { parseDevVars } from "./lib/deploy-config.js";
+import { planWebhooks, sampleShift, settingProblems, STEP_OF, summaryRow, wantedWebhooks, type ExistingWebhook } from "./lib/wizard-turn-on.js";
+import { reminderShiftEnded } from "../src/messages/reminder.js";
+import { fullName } from "./lib/wizard-people.js";
 import {
   adminRows,
   checkClientSlug,
@@ -70,7 +84,7 @@ const FORMS_PAGE = 300;
 const USERS_PAGE = 500;
 const SMALL_PAGE = 100;
 
-async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<Response> {
+async function call(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<Response> {
   const key = (process.env.CT_API_KEY ?? "").trim();
   if (!key) throw new Stop(4, "No API key saved yet. Run the key step first: npm run setup -- --step key");
   const base = (process.env.CT_API_BASE ?? "https://api.connecteam.com").replace(/\/+$/, "");
@@ -178,6 +192,133 @@ async function createChannel(title: string, ids: string): Promise<string[]> {
   return [id];
 }
 
+/** This Deployment's values as the wizard saved them. */
+function devVars(): Record<string, string> {
+  const path = process.env.WIZARD_ENV_FILE || ".dev.vars";
+  try {
+    return parseDevVars(readFileSync(path, "utf8"));
+  } catch {
+    throw new Stop(4, `${path} not found. Run the setup from the start: npm run setup`);
+  }
+}
+
+async function users(): Promise<string[]> {
+  const all = await allPages("/users/v1/users", USERS_PAGE, (b) => (b as { data?: { users?: ConnecteamUser[] } }).data?.users);
+  return all
+    .filter((u) => !u.isArchived)
+    .map((u) => ({ id: u.userId, label: `${fullName(u)}${u.userType === "owner" ? " (owner)" : u.userType === "manager" ? " (admin)" : ""}` }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map((u) => `${u.id}\t${u.label}`);
+}
+
+/** One summary row per setting, with names read from Connecteam where the setting is an id. */
+async function summary(): Promise<string[]> {
+  const v = devVars();
+  const problems = settingProblems(v);
+  if (problems.length) {
+    throw new Stop(
+      1,
+      problems
+        .map((p) => `${p.key}: ${p.problem}${STEP_OF[p.key] ? ` (rerun: npm run setup -- --step ${STEP_OF[p.key]})` : ""}`)
+        .join("\n"),
+    );
+  }
+  const f = ((await get(`/forms/v1/forms/${v.COMPLIANCE_FORM_ID}`)) as { data: ApiForm }).data;
+  const dq = dateQuestions(f).find((q) => q.questionId === v.SHIFT_DATE_QUESTION_ID);
+  const people = await allPages("/users/v1/users", USERS_PAGE, (b) => (b as { data?: { users?: ConnecteamUser[] } }).data?.users);
+  const admins = adminRows(people);
+  const excluded = new Set((v.EXCLUDED_ADMIN_IDS ?? "").split(",").map((x) => Number(x.trim())).filter(Boolean));
+  const unticked = admins.filter((a) => excluded.has(a.userId)).map((a) => a.label);
+  const board = v.TASK_BOARD_ID ? (await boards()).find((l) => l.startsWith(`${v.TASK_BOARD_ID}\t`))?.split("\t")[1] : undefined;
+  const chat = (await channels()).find((l) => l.startsWith(`${v.ALERTS_CHANNEL_ID}\t`))?.split("\t")[1];
+  const quiet = v.QUIET_HOURS_ENABLED === "true" ? `${clockLabel(v.QUIET_HOURS_FROM!)} to ${clockLabel(v.QUIET_HOURS_UNTIL!)}` : "off";
+  return [
+    summaryRow("Time zone", v.TIME_ZONE!),
+    summaryRow("Compliance Form", plainText(f.formName)),
+    summaryRow("Shift date question", dq ? dq.title : v.SHIFT_DATE_QUESTION_ID ? `${v.SHIFT_DATE_QUESTION_ID} (no longer in the form)` : "none (by time)"),
+    summaryRow("Where to find it", v.WHERE_TO_FIND!),
+    summaryRow("Grace period", formatDuration(Number(v.GRACE_PERIOD_MINUTES))),
+    summaryRow("Escalation delay", formatDuration(Number(v.ESCALATION_DELAY_MINUTES))),
+    summaryRow("Quiet hours", quiet),
+    summaryRow(
+      "Escalations to",
+      `${admins.length - unticked.length} of ${admins.length} admins${unticked.length ? ` (not ${unticked.join(", ")})` : ""}, plus direct managers`,
+    ),
+    summaryRow("Reminder task", v.REMINDER_TASK_ENABLED === "true" ? `on, board "${board ?? v.TASK_BOARD_ID}"` : "off"),
+    summaryRow("Sender", v.CT_PUBLISHER_NAME!),
+    summaryRow("Alerts channel", chat ?? `${v.ALERTS_CHANNEL_ID} (not found: rerun --step alerts)`),
+    summaryRow("Support link", v.INTEGRATOR_RELAY_URL ? `on, as "${v.INTEGRATOR_CLIENT_SLUG}"` : "off"),
+  ];
+}
+
+/** Every subscription on the account (this Deployment's are picked out by URL). */
+async function listWebhooks(): Promise<ExistingWebhook[]> {
+  return allPages("/settings/v1/webhooks", SMALL_PAGE, (b) => (b as { data?: { webhooks?: ExistingWebhook[] } }).data?.webhooks);
+}
+
+async function webhooks(target: string): Promise<string[]> {
+  if (!/^https:\/\//.test(target)) throw new Stop(1, `"${target}" isn't the Worker's https:// address.`);
+  const v = devVars();
+  const secret = v.CT_WEBHOOK_SECRET?.trim();
+  if (!secret) throw new Stop(1, "No webhook secret saved yet.");
+  const plan = planWebhooks(await listWebhooks(), wantedWebhooks(target, secret, v), target);
+  const done: string[] = [];
+  const failed = (what: string, res: Response) =>
+    new Stop(4, [...done, `Connecteam answered HTTP ${res.status} when it was asked to ${what}.`].join("\n"));
+  for (const u of plan.update) {
+    const res = await call("PUT", `/settings/v1/webhooks/${u.id}`, u.body);
+    if (!res.ok) throw failed(`update the ${u.body.featureType} webhook ${u.id}`, res);
+    done.push(`updated\t${u.body.featureType} (id ${u.id})`);
+  }
+  for (const body of plan.create) {
+    const res = await call("POST", "/settings/v1/webhooks", body);
+    if (!res.ok) throw failed(`create the ${body.featureType} webhook`, res);
+    const id = ((await res.json()) as { data?: { id?: unknown } }).data?.id;
+    done.push(`created\t${body.featureType} (id ${String(id ?? "?")})`);
+  }
+  // Extras go only once every wanted one is in place: until then an extra may be the one that works.
+  for (const id of plan.remove) {
+    const res = await call("DELETE", `/settings/v1/webhooks/${id}`);
+    if (!res.ok && res.status !== 404) throw failed(`remove the extra webhook ${id}`, res);
+    done.push(`removed\textra webhook (id ${id})`);
+  }
+  return done;
+}
+
+/**
+ * One real Reminder, in the real wording (#19 user story 50), for a sample
+ * Shift today, sent as the custom publisher. The send's outcome is the
+ * answer: anything but a 2xx says why it didn't go.
+ */
+async function testMessage(userId: string): Promise<string[]> {
+  if (!/^[1-9]\d*$/.test(userId)) throw new Stop(1, `"${userId}" isn't a user id.`);
+  const v = devVars();
+  const problems = settingProblems(v);
+  if (problems.length) throw new Stop(1, `Settings are missing (${problems.map((p) => p.key).join(", ")}). Run the setup from the start: npm run setup`);
+  const user = ((await get(`/users/v1/users?userIds=${userId}&limit=1&offset=0`)) as { data?: { users?: ConnecteamUser[] } }).data?.users?.[0];
+  if (!user) throw new Stop(4, `No active user ${userId} in this account.`);
+  const form = ((await get(`/forms/v1/forms/${v.COMPLIANCE_FORM_ID}`)) as { data: ApiForm }).data;
+  const text = reminderShiftEnded({
+    firstName: user.firstName ?? "",
+    shift: sampleShift(Math.floor(Date.now() / 1000), v.TIME_ZONE!),
+    deploymentZone: v.TIME_ZONE!,
+    formName: plainText(form.formName),
+    whereToFind: v.WHERE_TO_FIND!,
+    escalationDelayMinutes: Number(v.ESCALATION_DELAY_MINUTES),
+  });
+  const res = await call("POST", `/chat/v1/conversations/privateMessage/${userId}`, { senderId: Number(v.CT_PUBLISHER_ID), text });
+  if (!res.ok) {
+    const detail = String(((await res.json().catch(() => ({}))) as { detail?: unknown }).detail ?? "");
+    if (res.status === 404 && detail === "Sender id not found") {
+      throw new Stop(4, "Connecteam doesn't know the sender (the custom publisher). Rerun: npm run setup -- --step sender");
+    }
+    if (res.status === 401 || res.status === 403) throw new Stop(4, "Connecteam didn't accept the API key. Rerun: npm run setup -- --step key");
+    if (res.status === 429 || res.status >= 500) throw new Stop(4, `Connecteam is busy or down right now (HTTP ${res.status}). Try again in a minute.`);
+    throw new Stop(4, `Connecteam didn't send it (HTTP ${res.status}${detail ? `: ${detail}` : ""}).`);
+  }
+  return text.split("\n");
+}
+
 function minutesArg(v: string | undefined): number {
   const n = Number(v);
   if (!Number.isInteger(n) || n < 1) throw new Stop(1, `"${v ?? ""}" isn't a number of minutes.`);
@@ -233,6 +374,14 @@ async function main(args: string[]): Promise<string[]> {
       return channels();
     case "create-channel":
       return createChannel(rest[0] ?? "", rest[1] ?? "");
+    case "users":
+      return users();
+    case "summary":
+      return summary();
+    case "webhooks":
+      return webhooks(rest[0] ?? "");
+    case "test-message":
+      return testMessage(rest[0] ?? "");
     case "relay-url": {
       const u = checkRelayUrl(rest[0] ?? "");
       if (!u.ok) throw new Stop(1, u.problem);

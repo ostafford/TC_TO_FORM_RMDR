@@ -1,13 +1,14 @@
 /**
- * The setup wizard (#37 to #39), driven as a person would: the real script
+ * The setup wizard (#37 to #40), driven as a person would: the real script
  * with typed input, no browser, and a fake Connecteam on localhost answering
  * in the shapes the live API sends (rate-limit headers, time clock settings,
- * forms, users, publishers, task boards and chats, tested live 2026-10-24). The Cloudflare step needs a person and
+ * forms, users, publishers, task boards and chats, tested live 2026-10-24;
+ * webhooks per the docs), and a fake wrangler standing in for Cloudflare. The Cloudflare step needs a person and
  * a real account, so only its entry points are checked here.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, chmodSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +79,13 @@ const CHATS = Array.from({ length: 12 }, (_, i) => ({
 /** What POST /chat/v1/conversations was sent, and whether it's refused (as for a non-owner key, per the docs). */
 const created: unknown[] = [];
 let createStatus = 200;
+/** Connecteam's webhook subscriptions, and every write to them. */
+let webhooks: Array<Record<string, unknown> & { id: number }> = [];
+let nextWebhookId = 900;
+const webhookCalls: string[] = [];
+/** Direct messages sent, and what the next one answers. */
+const dms: Array<{ userId: number; body: { senderId: number; text: string } }> = [];
+let dmAnswer: { status: number; detail?: string } = { status: 200 };
 
 beforeAll(async () => {
   server = createServer(async (req, res) => {
@@ -117,7 +125,8 @@ beforeAll(async () => {
       return { rows: rows.slice(offset, offset + limit), paging: { offset: Math.min(offset + limit, rows.length) } };
     };
     if (url.pathname === "/users/v1/users") {
-      const p = page(USERS);
+      const only = url.searchParams.get("userIds");
+      const p = page(only ? USERS.filter((u) => String(u.userId) === only) : USERS);
       return send(200, { data: { users: p.rows }, paging: p.paging });
     }
     if (url.pathname === "/tasks/v1/taskboards") return send(200, { data: { taskBoards: boards } });
@@ -129,6 +138,30 @@ beforeAll(async () => {
       created.push(JSON.parse(raw));
       if (createStatus !== 200) return send(createStatus, { detail: "Forbidden" });
       return send(200, { data: { conversation: { id: "chat-new", ...JSON.parse(raw) } } });
+    }
+    const dm = /^\/chat\/v1\/conversations\/privateMessage\/(\d+)$/.exec(url.pathname);
+    if (dm && req.method === "POST") {
+      dms.push({ userId: Number(dm[1]), body: JSON.parse(raw) });
+      return dmAnswer.status === 200 ? send(200, { data: {} }) : send(dmAnswer.status, { detail: dmAnswer.detail ?? "" });
+    }
+    if (url.pathname === "/settings/v1/webhooks" && req.method === "GET") {
+      const p = page(webhooks);
+      return send(200, { data: { webhooks: p.rows }, paging: p.paging });
+    }
+    if (url.pathname === "/settings/v1/webhooks" && req.method === "POST") {
+      const w = { ...JSON.parse(raw), id: nextWebhookId++ };
+      webhooks.push(w);
+      webhookCalls.push(`POST ${w.featureType}`);
+      return send(200, { data: w });
+    }
+    const hook = /^\/settings\/v1\/webhooks\/(\d+)$/.exec(url.pathname);
+    if (hook) {
+      const i = webhooks.findIndex((w) => w.id === Number(hook[1]));
+      if (i < 0) return send(404, { detail: "Not Found" });
+      webhookCalls.push(`${req.method} ${hook[1]}`);
+      if (req.method === "PUT") webhooks[i] = { ...webhooks[i]!, ...JSON.parse(raw) };
+      if (req.method === "DELETE") webhooks.splice(i, 1);
+      return send(200, { data: webhooks[i] ?? {} });
     }
     if (url.pathname === "/chat/v1/conversations") {
       const p = page(CHATS);
@@ -142,7 +175,7 @@ beforeAll(async () => {
 });
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-function run(args: string[], input = "", envFile?: string): Promise<{ code: number; out: string }> {
+function run(args: string[], input = "", envFile?: string, extraEnv: Record<string, string> = {}): Promise<{ code: number; out: string }> {
   return new Promise((resolve) => {
     const child = spawn("bash", [SCRIPT, ...args], {
       cwd: root,
@@ -154,6 +187,7 @@ function run(args: string[], input = "", envFile?: string): Promise<{ code: numb
         WIZARD_DETAILS: join(tmpdir(), "wizard-test-wrangler.log"),
         CT_API_BASE: base,
         ...(envFile ? { WIZARD_ENV_FILE: envFile } : {}),
+        ...extraEnv,
       },
     });
     let out = "";
@@ -557,5 +591,183 @@ describe("steps 13 and 14, the Alerts Channel and support link (--step alerts)",
       INTEGRATOR_CLIENT_SLUG: "acme-cleaning",
       INTEGRATOR_RELAY_SECRET: "relay-secret-123",
     });
+  });
+});
+
+/**
+ * A stand-in for wrangler: databases kept in a state file, every call and
+ * every secret logged, and a deploy that prints a workers.dev address as the
+ * real one does.
+ */
+function fakeWrangler(): { env: Record<string, string>; log: () => string; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "wrangler-"));
+  const bin = join(dir, "wrangler");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env bash
+state="${dir}/d1.json"; log="${dir}/calls.log"
+[[ -f "$state" ]] || echo '[]' > "$state"
+echo "wrangler $*" >> "$log"
+case "$1 $2" in
+  "whoami "*) echo "You are logged in.  │ Example Pty Ltd │ 3f2a91c0 │" ;;
+  "d1 list") cat "$state" ;;
+  "d1 create") echo '[{"uuid":"11111111-2222-3333-4444-555555555555","name":"'"$3"'"}]' > "$state"
+               echo 'Created your new D1 database. "database_id": "11111111-2222-3333-4444-555555555555"' ;;
+  "d1 migrations") echo "Migrations applied" ;;
+  "deployments status") echo "This Worker does not exist on your account. [code: 10007]" >&2; exit 1 ;;
+  "deploy "*|"deploy") echo "Uploaded clock-out-form-reminder"; echo "  https://clock-out-form-reminder.test.workers.dev" ;;
+  "secret put") echo "secret $3=$(cat)" >> "$log"; echo "Success! Uploaded secret $3" ;;
+  *) echo "fake wrangler: unexpected $*" >&2; exit 9 ;;
+esac
+`,
+  );
+  chmodSync(bin, 0o755);
+  return {
+    dir,
+    env: { WRANGLER_CMD: bin, WIZARD_DEPLOY_CONFIG: join(dir, "wrangler.deploy.json") },
+    log: () => (existsSync(join(dir, "calls.log")) ? readFileSync(join(dir, "calls.log"), "utf8") : ""),
+  };
+}
+
+/** Every answer a first-time setup takes, in order (Enter takes a default). */
+const FIRST_RUN = [
+  "", // banner
+  "y", "y", // Workers Paid; the right account
+  "ct-key-full", // API key
+  "", // time zone
+  "1", "", "", // form, date question, where
+  "", "", // grace, delay
+  "", "", "", // quiet hours on, from, until
+  "", // recipients
+  "", "1", // reminder task on, board
+  "2480518", // publisher
+  "12", "", // alerts channel, no support link
+  "", // tip
+  "y", // summary
+  "", "y", "y", // test: the owner, send, arrived
+].join("\n") + "\n";
+
+describe("steps 16 to 18: summary, turn it on, test message (a whole first run)", { timeout: 180_000 }, () => {
+  beforeEach(() => {
+    answers = [{ status: 200, dayLimit: 20_000 }];
+    dmAnswer = { status: 200 };
+  });
+
+  it("summarises, creates the database, deploys, stores the secrets, subscribes the three webhooks and sends the test", async () => {
+    webhooks = [{ id: 1, name: "Someone else's", url: "https://other.example/hook", featureType: "users", eventTypes: ["user_updated"] }];
+    webhookCalls.length = 0;
+    dms.length = 0;
+    const cf = fakeWrangler();
+    const env = tempEnv();
+    const r = await run([], FIRST_RUN, env, cf.env);
+    expect(r.code, r.out).toBe(0);
+    const v = saved(env);
+    const url = "https://clock-out-form-reminder.test.workers.dev/webhook";
+
+    // 16: every setting, by name.
+    expect(r.out).toMatch(/Compliance Form \.{3,} Daily Compliance Form/);
+    expect(r.out).toMatch(/Shift date question \.{3,} Which shift is this form for\?/);
+    expect(r.out).toMatch(/Quiet hours \.{3,} 9:00 pm to 7:00 am/);
+    expect(r.out).toMatch(/Escalations to \.{3,} 3 of 3 admins, plus direct managers/);
+    expect(r.out).toMatch(/Reminder task \.{3,} on, board "Task Management"/);
+    expect(r.out).toMatch(/Alerts channel \.{3,} Managers \(channel\)/);
+
+    // 17: database, checked config, migrations, deploy, then secrets.
+    expect(v.D1_DATABASE_ID).toBe("11111111-2222-3333-4444-555555555555");
+    expect(v.CT_WEBHOOK_SECRET).toMatch(/^[0-9a-f]{64}$/);
+    const calls = cf.log();
+    expect(calls).toContain("wrangler d1 create clock-out-form-reminder");
+    expect(calls).toMatch(/wrangler d1 migrations apply clock-out-form-reminder --remote --config .*wrangler\.deploy\.json/);
+    expect(calls.indexOf("wrangler deploy")).toBeLessThan(calls.indexOf("wrangler secret put CT_API_KEY"));
+    expect(calls).toContain("secret CT_API_KEY=ct-key-full");
+    expect(calls).toContain(`secret CT_WEBHOOK_SECRET=${v.CT_WEBHOOK_SECRET}`);
+    expect(calls).not.toContain("INTEGRATOR_RELAY_SECRET");
+    const built = JSON.parse(readFileSync(cf.env.WIZARD_DEPLOY_CONFIG!, "utf8"));
+    expect(built.d1_databases[0].database_id).toBe(v.D1_DATABASE_ID);
+    expect(built.vars.COMPLIANCE_FORM_ID).toBe("501");
+    expect(r.out).toContain("Deployed: https://clock-out-form-reminder.test.workers.dev");
+
+    // The three subscriptions; the other integration's left alone.
+    expect(webhooks.find((w) => w.id === 1)?.name).toBe("Someone else's");
+    const ours = webhooks.filter((w) => w.url === url);
+    expect(ours.map((w) => [w.featureType, w.entityId, w.eventTypes])).toEqual([
+      ["time_activity", null, expect.arrayContaining(["clock_out", "auto_clock_out", "admin_edit", "admin_delete", "admin_approved_edit_request"])],
+      ["forms", "501", ["form_submission"]],
+      ["tasks", "701", ["task_completed"]],
+    ]);
+    for (const w of ours) expect(w).toMatchObject({ secretKey: v.CT_WEBHOOK_SECRET, isDisabled: false });
+    expect((ours[0]!.eventTypes as string[]).some((e) => e.startsWith("user_") || e.startsWith("admin_declined"))).toBe(false);
+
+    // 18: one real Reminder to the owner, as the publisher.
+    expect(dms).toHaveLength(1);
+    expect(dms[0]!.userId).toBe(1);
+    expect(dms[0]!.body.senderId).toBe(2480518);
+    expect(dms[0]!.body.text).toMatch(/^Hi Okky 👋\n\nWe haven't received your form for this shift yet\.\n\nShift: \w{3} \d+ \w{3}, 9:00 am – 5:00 pm\nForm: Daily Compliance Form\nWhere: the Forms tab in the Connecteam app\n\nPlease submit it now\. Your manager is notified if it's still missing in 4 hours\.$/);
+    expect(r.out).toContain("Sent to Okky Stafford (owner):");
+    expect(r.out).toContain("All set.");
+    expect(r.out).toContain("The reminder is on.");
+
+    // A rerun: same database, same secret, the webhooks updated (an extra from earlier removed), not added.
+    webhooks.push({ id: 950, url, featureType: "forms", eventTypes: ["form_submission"] });
+    webhookCalls.length = 0;
+    const again = await run([], FIRST_RUN.replace("ct-key-full", "").replace("\n1\n\n\n\n\n", "\n\n\n\n\n\n").replace("\n\n1\n2480518", "\n\n\n2480518"), env, cf.env);
+    expect(again.code, again.out).toBe(0);
+    expect(saved(env).D1_DATABASE_ID).toBe(v.D1_DATABASE_ID);
+    expect(saved(env).CT_WEBHOOK_SECRET).toBe(v.CT_WEBHOOK_SECRET);
+    expect(cf.log().match(/d1 create/g)).toHaveLength(1);
+    expect(again.out).toContain("Reusing the database already on this account.");
+    expect(webhookCalls.filter((c) => c.startsWith("POST"))).toEqual([]);
+    expect(webhookCalls.filter((c) => c.startsWith("PUT"))).toHaveLength(3);
+    expect(webhookCalls).toContain("DELETE 950");
+    expect(webhooks.filter((w) => w.url === url)).toHaveLength(3);
+    rmSync(cf.dir, { recursive: true });
+  });
+});
+
+describe("step 18 on its own (--step test)", { timeout: SLOW }, () => {
+  const ready = () =>
+    envWithKey(
+      [
+        "COMPLIANCE_FORM_ID='501'", "WHERE_TO_FIND='the red folder'", "GRACE_PERIOD_MINUTES='30'", "ESCALATION_DELAY_MINUTES='90'",
+        "QUIET_HOURS_ENABLED='false'", "TIME_ZONE='Australia/Perth'", "REMINDER_TASK_ENABLED='false'", "CT_PUBLISHER_ID='2480518'",
+        "CT_PUBLISHER_NAME='Compliance Reminders (Automated)'", "ALERTS_CHANNEL_ID='chat-12'",
+      ].join("\n") + "\n",
+    );
+
+  beforeEach(() => {
+    answers = [{ status: 200, dayLimit: 20_000 }];
+    dms.length = 0;
+    dmAnswer = { status: 200 };
+  });
+
+  it("finds someone by part of their name and sends them the real wording", async () => {
+    const r = await run(["--step", "test"], "jor\ny\ny\n", ready());
+    expect(r.code).toBe(0);
+    expect(dms).toEqual([{ userId: 5, body: { senderId: 2480518, text: expect.stringContaining("Hi Jordan 👋") } }]);
+    expect(dms[0]!.body.text).toContain("Where: the red folder");
+    expect(dms[0]!.body.text).toContain("still missing in 1 hour 30 minutes.");
+  });
+
+  it("lists the matches when several people match", async () => {
+    // "admin" matches the label "(admin)" on Priya and Marcus, and the name of the invited one.
+    const r = await run(["--step", "test"], "admin\n2\ny\ny\n", ready());
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("1) Invited Admin");
+    expect(dms).toHaveLength(1);
+  });
+
+  it("reports a send that didn't go, and why", async () => {
+    dmAnswer = { status: 404, detail: "Sender id not found" };
+    const r = await run(["--step", "test"], "jordan\ny\n", ready());
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Connecteam doesn't know the sender (the custom publisher). Rerun: npm run setup -- --step sender");
+    expect(r.out).not.toContain("Sent to");
+  });
+
+  it("sends nothing when told not to", async () => {
+    const r = await run(["--step", "test"], "jordan\nn\n", ready());
+    expect(r.code).toBe(0);
+    expect(dms).toHaveLength(0);
+    expect(r.out).toContain("Not sent.");
   });
 });

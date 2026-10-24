@@ -31,11 +31,14 @@ import {
 } from "./lib/deploy-config.js";
 
 const checkLive = process.argv.includes("--check-live");
+// The setup wizard's tests point these at temporary files.
+const devVarsPath = process.env.DEV_VARS_FILE || ".dev.vars";
+const configPath = process.env.DEPLOY_CONFIG_FILE || DEPLOY_CONFIG_PATH;
 const allowDatabaseChange = process.argv.includes("--allow-database-change");
 
 function stop(...lines: string[]): never {
   // A config that failed a check must not be left lying around to deploy by hand.
-  rmSync(DEPLOY_CONFIG_PATH, { force: true });
+  rmSync(configPath, { force: true });
   for (const l of lines) console.error(l);
   console.error("Nothing was deployed or changed.");
   process.exit(1);
@@ -49,10 +52,14 @@ function readText(path: string, missing: string): string {
   }
 }
 
-/** Runs wrangler; returns its output, or throws with stdout + stderr in the message. */
+/**
+ * Runs wrangler; returns its output, or throws with stdout + stderr in the
+ * message. WRANGLER_CMD replaces `npx wrangler` (the setup wizard's tests).
+ */
 function wrangler(args: string[]): string {
+  const [cmd, ...pre] = process.env.WRANGLER_CMD ? [process.env.WRANGLER_CMD] : ["npx", "--yes", "wrangler"];
   try {
-    return execFileSync("npx", ["--yes", "wrangler", ...args, "--config", DEPLOY_CONFIG_PATH], {
+    return execFileSync(cmd!, [...pre, ...args, "--config", configPath], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -69,7 +76,7 @@ function json<T>(text: string): T {
 
 const template = readText("wrangler.jsonc", "✗ wrangler.jsonc not found. Run this from the repo root.");
 const devVars = parseDevVars(
-  readText(".dev.vars", "✗ .dev.vars not found. The setup wizard creates it; or copy .dev.vars.example and fill it in."),
+  readText(devVarsPath, "✗ .dev.vars not found. The setup wizard creates it; or copy .dev.vars.example and fill it in."),
 );
 
 const rendered = renderDeployConfig(template, devVars);
@@ -80,8 +87,8 @@ if (!rendered.ok) {
     "  Fix each as KEY=value in .dev.vars, or rerun that setup step.",
   );
 }
-writeFileSync(DEPLOY_CONFIG_PATH, `${JSON.stringify(rendered.config, null, 2)}\n`);
-console.log(`✓ ${DEPLOY_CONFIG_PATH} written (database ${rendered.databaseId}).`);
+writeFileSync(configPath, `${JSON.stringify(rendered.config, null, 2)}\n`);
+console.log(`✓ ${configPath} written (database ${rendered.databaseId}).`);
 
 if (checkLive) {
   // 1. The database must exist on this account: catches the wrong account and a stale id.

@@ -219,8 +219,8 @@ ENV_FILE="${WIZARD_ENV_FILE:-.dev.vars}"
 
 # Every step in the order setup runs them, and the ones --step can rerun (#19).
 STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test)
-# Built so far; the rest arrive with #40 and #41.
-BUILT_STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts)
+# Built so far; webhook arrives with #41.
+BUILT_STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts test)
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   RED=$(tput setaf 1)
@@ -278,14 +278,17 @@ save() {
 # one plain line per step instead.
 WIZARD_DETAILS="${WIZARD_DETAILS:-$PWD/setup-wizard-$(date +%Y%m%d-%H%M%S)-wrangler.log}"
 
-# wr: run this repo's wrangler, streaming output (for `wrangler login`).
-wr() { npx wrangler "$@"; }
+# wrangler_bin ARGS...: this repo's wrangler, or $WRANGLER_CMD (the wizard's tests).
+wrangler_bin() { if [[ -n "${WRANGLER_CMD:-}" ]]; then "$WRANGLER_CMD" "$@"; else npx wrangler "$@"; fi; }
+
+# wr: run wrangler, streaming output (for `wrangler login`).
+wr() { wrangler_bin "$@"; }
 
 # wr_quiet ARGS...: run wrangler non-interactively, its output kept out of
 # sight: appended to $WIZARD_DETAILS and left in $WR_OUT.
 wr_quiet() {
   local rc=0
-  WR_OUT=$(npx wrangler "$@" < /dev/null 2>&1) || rc=$?
+  WR_OUT=$(wrangler_bin "$@" < /dev/null 2>&1) || rc=$?
   { printf '\n$ wrangler %s   (exit %s, %s)\n' "$*" "$rc" "$(date +%H:%M:%S)"; printf '%s\n' "$WR_OUT"; } >> "$WIZARD_DETAILS"
   chmod 600 "$WIZARD_DETAILS" 2>/dev/null || true
   return "$rc"
@@ -928,6 +931,214 @@ s_tip() {
   pause "Press Enter to continue"
 }
 
+# ── turning it on (#40) ───────────────────────────────────────────────────
+
+DB_NAME="clock-out-form-reminder"
+# The config every remote command uses, built from wrangler.jsonc + $ENV_FILE.
+DEPLOY_CONFIG="${WIZARD_DEPLOY_CONFIG:-wrangler.deploy.json}"
+
+# deploy_config: build and check that config (scripts/deploy-config.ts
+# --check-live), its output left in $DC_OUT and kept in $WIZARD_DETAILS.
+deploy_config() {
+  local rc=0
+  DC_OUT=$(DEV_VARS_FILE="$ENV_FILE" DEPLOY_CONFIG_FILE="$DEPLOY_CONFIG" npm run --silent deploy:config -- --check-live < /dev/null 2>&1) || rc=$?
+  { printf '\n$ npm run deploy:config -- --check-live   (exit %s, %s)\n' "$rc" "$(date +%H:%M:%S)"; printf '%s\n' "$DC_OUT"; } >> "$WIZARD_DETAILS"
+  return "$rc"
+}
+
+# show_wr_tail: the end of the last wrangler call's output, for a failure.
+show_wr_tail() {
+  printf '%s\n' "$WR_OUT" | perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' | tail -15 | sed 's/^/    /'
+  note "Full output: ${WIZARD_DETAILS#"$PWD"/}"
+}
+
+# put_secret NAME VALUE "label": store a secret on the Worker, the value piped, never an argument.
+put_secret() {
+  local out rc=0
+  out=$(printf '%s' "$2" | wrangler_bin secret put "$1" --config "$DEPLOY_CONFIG" 2>&1) || rc=$?
+  { printf '\n$ wrangler secret put %s --config %s   (exit %s, %s)\n' "$1" "$DEPLOY_CONFIG" "$rc" "$(date +%H:%M:%S)"; printf '%s\n' "$out"; } >> "$WIZARD_DETAILS"
+  if (( rc == 0 )); then ok "Stored $3 on Cloudflare."; return 0; fi
+  fail "Couldn't store $3 on Cloudflare. Without it the reminder can't run."
+  note "Store it by hand: npx wrangler secret put $1 --config wrangler.deploy.json"
+  note "Full output: ${WIZARD_DETAILS#"$PWD"/}"
+  exit 1
+}
+
+s_summary() {
+  stage "Check your settings"
+  why "Nothing is live yet. Here is every setting in one place, so you can check" \
+      "them before the reminder starts watching your time clock."
+  todo "Read the list below." \
+       "Answer y to turn the reminder on, or n to stop and change something first."
+  example "Sender ............... Compliance Reminders (Automated)"
+  need_key
+  local rc=0 l
+  helper summary || rc=$?
+  if (( rc == 1 )); then
+    fail "Some settings are missing or wrong:"
+    while IFS= read -r l; do note "  $l"; done <<<"$HELPER_OUT"
+    exit 1
+  fi
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  printf '\n'
+  while IFS= read -r l; do say "$l"; done <<<"$HELPER_OUT"
+  printf '\n'
+  confirm "Is this right? Answering y turns the reminder on." || {
+    warn "Stopped. Nothing went live."
+    note "Change a setting with: npm run setup -- --step NAME (see --help), then run npm run setup again."
+    exit 1
+  }
+  next_up "turn it on."
+}
+
+s_turn_on() {
+  stage "Turn it on"
+  why "This installs the reminder on your Cloudflare account, then asks Connecteam" \
+      "to tell it about clock-outs, form submissions and ticked tasks."
+  todo "Nothing to type: watch each line below. It takes a minute or two."
+  example "✓ Database created." \
+          "✓ Deployed: https://clock-out-form-reminder.example.workers.dev"
+  need_key
+  printf '\n'
+
+  # The webhook secret Connecteam sends with every delivery. Kept on a rerun:
+  # a new one would turn away deliveries until the webhooks are updated too.
+  local secret
+  secret=$(_existing CT_WEBHOOK_SECRET || true)
+  if [[ -n "$secret" ]]; then
+    ok "Kept the webhook secret already saved."
+  else
+    secret=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')
+    write_env CT_WEBHOOK_SECRET "$secret" >/dev/null
+    ok "Made a webhook secret."
+  fi
+
+  # The database: the one already saved, else one by this name, else a new one.
+  local db saved_db
+  saved_db=$(_existing D1_DATABASE_ID || true)
+  wr_quiet d1 list --json || { fail "Couldn't list this Cloudflare account's databases:"; show_wr_tail; exit 1; }
+  db=$(printf '%s' "$WR_OUT" | node -e '
+    let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+      try {
+        const list = JSON.parse(s.slice(s.indexOf("[")));
+        const m = list.find(d => d.uuid === process.argv[1]) || list.find(d => d.name === process.argv[2]);
+        console.log(m ? m.uuid : "");
+      } catch { console.log(""); }
+    })' "$saved_db" "$DB_NAME")
+  if [[ -n "$db" ]]; then
+    ok "Reusing the database already on this account."
+  else
+    wr_quiet d1 create "$DB_NAME" || { fail "Couldn't create the database:"; show_wr_tail; exit 1; }
+    db=$(printf '%s' "$WR_OUT" | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
+    [[ -n "$db" ]] || { fail "Created the database but couldn't read its id:"; show_wr_tail; exit 1; }
+    ok "Database created."
+  fi
+  write_env D1_DATABASE_ID "$db" >/dev/null
+
+  # Every remote command from here goes through the checked config.
+  deploy_config || { fail "The deploy settings aren't ready:"; printf '%s\n' "$DC_OUT" | sed 's/^/    /'; exit 1; }
+  if grep -q '^!' <<<"$DC_OUT"; then
+    printf '%s\n' "$DC_OUT" | sed -n '/^!/,$p' | sed 's/^/  /'
+  fi
+  wr_quiet d1 migrations apply "$DB_NAME" --remote --config "$DEPLOY_CONFIG" \
+    || { fail "Couldn't set up the database:"; show_wr_tail; exit 1; }
+  ok "Database up to date."
+
+  say "Deploying (about a minute)..."
+  wr_quiet deploy --config "$DEPLOY_CONFIG" || { fail "The deploy failed:"; show_wr_tail; exit 1; }
+  local url
+  url=$(printf '%s' "$WR_OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1 || true)
+  # Secrets after the deploy: `secret put` on a Worker that doesn't exist yet
+  # stops to ask whether to create one.
+  put_secret CT_API_KEY "$CT_API_KEY" "the API key"
+  put_secret CT_WEBHOOK_SECRET "$secret" "the webhook secret"
+  local relay_secret
+  relay_secret=$(_existing INTEGRATOR_RELAY_SECRET || true)
+  [[ -z "$relay_secret" ]] || put_secret INTEGRATOR_RELAY_SECRET "$relay_secret" "the support link's secret"
+  if [[ -z "$url" ]]; then
+    fail "Deployed, but couldn't read the reminder's address from Cloudflare."
+    note "Find it in Cloudflare (Workers & Pages > $DB_NAME), then subscribe the webhooks"
+    note "by hand: docs/RUNBOOK.md, \"Subscribing the webhooks\"."
+    exit 1
+  fi
+  ok "Deployed: $url"
+
+  local rc=0 what line
+  helper webhooks "$url/webhook" || rc=$?
+  while IFS=$'\t' read -r what line; do
+    case "$what" in
+      updated) ok "Connecteam webhook updated: $line" ;;
+      created) ok "Connecteam webhook added: $line" ;;
+      removed) ok "Connecteam webhook removed: $line" ;;
+      *) [[ -z "$what" ]] || fail "$what${line:+ $line}" ;;
+    esac
+  done <<<"$HELPER_OUT"
+  if (( rc != 0 )); then
+    note "Rerun npm run setup to try again: it updates what's there rather than adding more."
+    exit 1
+  fi
+  ok "Installed. It checks every minute from now on."
+  next_up "a test message."
+}
+
+s_test() {
+  stage "Test message"
+  why "To check it all works, this sends one real reminder, exactly as staff will" \
+      "see it, about a sample shift today. Nobody else is told, and nothing is" \
+      "recorded against anyone."
+  todo "Pick who gets it: you, or someone with the Connecteam app to hand (on a call, the client)." \
+       "Check it arrives on their phone."
+  example "Type part of a name, like \"jor\" for Jordan Lee, then pick from the matches."
+  need_key
+  local rc=0 ids=() labels=() id label def="" owners=0 input lower matches=() i n pick=""
+  helper users || rc=$?
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  while IFS=$'\t' read -r id label; do
+    ids+=("$id"); labels+=("$label")
+    if [[ "$label" == *" (owner)" ]]; then owners=$((owners + 1)); def="$label"; fi
+  done <<<"$HELPER_OUT"
+  (( owners == 1 )) || def=""
+  while :; do
+    ask_default input "Send the test to (part of a name):" "$def" || { fail "No one picked."; exit 1; }
+    lower=$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')
+    matches=()
+    for i in "${!labels[@]}"; do
+      [[ "${labels[$i]}" == "$input" ]] && { matches=("$i"); break; }
+      [[ -n "$lower" && "$(printf '%s' "${labels[$i]}" | tr '[:upper:]' '[:lower:]')" == *"$lower"* ]] && matches+=("$i")
+    done
+    if (( ${#matches[@]} == 0 )); then fail "No one matches \"$input\"."; continue; fi
+    if (( ${#matches[@]} == 1 )); then pick="${matches[0]}"; break; fi
+    if (( ${#matches[@]} > 20 )); then fail "${#matches[@]} people match. Type more of the name."; continue; fi
+    local shown=()
+    for i in "${matches[@]}"; do shown+=("${labels[$i]}"); done
+    choose n "Which one? (number)" "" 1 "${shown[@]}" || { fail "No one picked."; exit 1; }
+    pick="${matches[$((n - 1))]}"
+    break
+  done
+  confirm "Send the test reminder to ${labels[$pick]} now?" || { note "Not sent. Send one later with: npm run setup -- --step test"; return 0; }
+  rc=0
+  helper test-message "${ids[$pick]}" || rc=$?
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  ok "Sent to ${labels[$pick]}:"
+  local lines=() l
+  while IFS= read -r l; do lines+=("$l"); done <<<"$HELPER_OUT"
+  example "${lines[@]}"
+  if confirm "Did it arrive?"; then
+    ok "All set."
+  else
+    warn_long "Check that ${labels[$pick]} is signed in to the Connecteam app with notifications on, and look in their chats for the sender's name. If it still isn't there, send this session's log to your integrator."
+  fi
+}
+
+s_done() {
+  printf '\n'
+  ok "The reminder is on."
+  note "From now on, when someone clocks out without submitting the Compliance Form,"
+  note "they're reminded once the grace period ends, and your admins hear about it if"
+  note "it's still missing after the escalation delay."
+  note "To change one thing later: npm run setup -- --step NAME (see --help)."
+}
+
 # Each built step by --step name, and how many stages it shows.
 run_step() {
   case "$1" in
@@ -940,6 +1151,7 @@ run_step() {
     reminder-task) s_task ;;
     sender) s_sender ;;
     alerts) s_alerts; s_relay ;;
+    test) s_test ;;
   esac
 }
 step_stages() {
@@ -1012,14 +1224,16 @@ fi
 if [[ -n "$ONLY" ]]; then
   TOTAL_STAGES=$(step_stages "$ONLY")
   run_step "$ONLY"
-  printf '\n'
-  note "Saved to $ENV_FILE. Apply it with: npm run deploy"
-  note "(From the \"Turn it on\" step, the wizard deploys for you: #40.)"
+  if [[ "$ONLY" != test ]]; then
+    printf '\n'
+    note "Saved to $ENV_FILE. Apply it with: npm run deploy"
+    note "(Rerunning a step deploys for you once #41 is in.)"
+  fi
   finish
   return
 fi
 
-TOTAL_STAGES=15
+TOTAL_STAGES=18
 banner "Clock-out Form Reminder: setup"
 s_cloudflare
 s_key
@@ -1032,10 +1246,11 @@ s_task
 s_sender
 s_alerts; s_relay
 s_tip
+s_summary
+s_turn_on
+s_test
 finish
-note "This version of the wizard ends here: the summary, \"Turn it on\" and the"
-note "test message arrive with #40. Until then, add the webhook secret and the"
-note "database id to $ENV_FILE and deploy by hand, following docs/RUNBOOK.md."
+s_done
 }
 
 run_wizard "$@"; exit

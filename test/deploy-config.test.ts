@@ -234,6 +234,13 @@ describe("every deploy path uses the built config, never the template", () => {
   });
 
   it("any shell script's remote commands use the built config", () => {
-    for (const line of configReaders(shellScripts)) expect(line).toContain(CFG);
+    // The wizard runs wrangler through wr / wr_quiet / wrangler_bin, and names
+    // the config $DEPLOY_CONFIG (its tests point that elsewhere).
+    const viaHelpers = shellScripts.replace(/\b(wr_quiet|wr|wrangler_bin)\b/g, "wrangler");
+    // Not the lines that write a command into the session log.
+    const lines = configReaders(viaHelpers).filter((l) => !l.includes("printf '\\n$ wrangler"));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) expect(line.includes(CFG) || line.includes('--config "$DEPLOY_CONFIG"'), line).toBe(true);
+    expect(shellScripts).toContain(`DEPLOY_CONFIG="\${WIZARD_DEPLOY_CONFIG:-${DEPLOY_CONFIG_PATH}}"`);
   });
 });
