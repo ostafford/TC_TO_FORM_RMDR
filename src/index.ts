@@ -59,6 +59,8 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
           log({ evt: "webhook", status: 500, problems: settings.problems });
           return json(500, { error: "settings incomplete" });
         }
+        // A switch reaches Shifts in progress before this submission is credited (#30).
+        await store.noteComplianceForm(settings.settings.complianceFormId);
         // A late submission cancels the Escalation as soon as it arrives.
         const shiftId = await creditSubmission(store, form.submission, creditRules(settings.settings), now);
         log({ evt: "webhook", status: 200, eventType: form.eventType, userId: form.userId, creditedTo: shiftId });
