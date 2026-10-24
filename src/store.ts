@@ -161,7 +161,8 @@ export type { AlertCondition };
 /**
  * Small values the Worker keeps (worker_state): the sweep's (#32), when its
  * reads started failing and the last failure's status (#33), the daily
- * allowance left (#34), and when the last check-in went to the relay (#36).
+ * allowance left (#34), when the last check-in went to the relay (#36), and
+ * the Compliance Form last seen (#30).
  */
 export type StateKey =
   | "clocks_listed_at"
@@ -169,7 +170,8 @@ export type StateKey =
   | "read_failing_since"
   | "read_failing_status"
   | "day_remaining"
-  | "checked_in_at";
+  | "checked_in_at"
+  | "compliance_form_id";
 
 /** What the lost-webhook alert reads (#34). */
 export interface WebhookHealth {
@@ -1132,6 +1134,38 @@ export class WorkList {
       )
       .bind(f.timeActivityId, f.kind, f.userId, now)
       .run();
+  }
+
+  /**
+   * The Compliance Form setting is `formId` now (#30). When it has changed
+   * since last seen, every Shift still needing a form accepts the new one as
+   * well as the ones it had: someone mid-Shift at a switch may submit either,
+   * the form they were told about or the new one. Shifts recorded from now on
+   * take only the new one (`recordSegment`). Safe to repeat and to overlap.
+   * Returns whether it had changed.
+   */
+  async noteComplianceForm(formId: number): Promise<boolean> {
+    const seen = await this.state("compliance_form_id");
+    if (seen === formId) return false;
+    await this.db.batch([
+      ...(seen === null
+        ? []
+        : [
+            this.db
+              .prepare(
+                `UPDATE shifts SET form_ids = json_insert(form_ids, '$[#]', ?1)
+                 WHERE status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL
+                   AND NOT EXISTS (SELECT 1 FROM json_each(shifts.form_ids) WHERE value = ?1)`,
+              )
+              .bind(formId),
+          ]),
+      this.db
+        .prepare(
+          "INSERT INTO worker_state (key, value) VALUES ('compliance_form_id', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(formId),
+    ]);
+    return seen !== null;
   }
 
   /** The blocks in force (#34). */

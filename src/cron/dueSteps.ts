@@ -80,6 +80,10 @@ export async function runDueSteps(input: DueStepDeps): Promise<
     paused: boolean;
   }
 > {
+  // A Compliance Form switch reaches Shifts in progress before anything checks them (#30).
+  if (await input.store.noteComplianceForm(input.settings.complianceFormId)) {
+    (input.log ?? (() => {}))({ evt: "compliance_form_switched", formId: input.settings.complianceFormId });
+  }
   // First, and needing no Connecteam call: a paused Deployment still checks in.
   const checkedIn = await checkIn(input);
   const deps: DueStepDeps = { ...input, blocks: await liftBlocks(input) };
