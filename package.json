@@ -16,7 +16,9 @@
     "relay:deploy": "wrangler deploy --config relay/wrangler.jsonc",
     "relay:dev": "wrangler dev --config relay/wrangler.jsonc",
     "relay:secret": "wrangler secret put --config relay/wrangler.jsonc",
-    "relay:teardown": "wrangler delete --config relay/wrangler.jsonc"
+    "relay:teardown": "wrangler delete --config relay/wrangler.jsonc",
+    "setup": "bash scripts/setup-wizard.sh",
+    "check-api-key": "tsx scripts/check-api-key.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

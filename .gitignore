@@ -21,6 +21,9 @@ wrangler.deploy.json
 *.sqlite
 *.sqlite-*
 
+# setup wizard session logs (keys redacted, but still this Deployment's details)
+setup-wizard-*.log
+
 # test / coverage
 coverage/
 *.log

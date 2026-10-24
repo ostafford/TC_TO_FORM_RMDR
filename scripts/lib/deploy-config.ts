@@ -149,9 +149,19 @@ export function parseDevVars(text: string): Record<string, string> {
     if (!line || line.startsWith("#")) continue;
     const eq = line.indexOf("=");
     if (eq <= 0) continue;
-    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim().replace(/^(["'])(.*)\1$/, "$2");
+    out[line.slice(0, eq).trim()] = unquote(line.slice(eq + 1).trim());
   }
   return out;
+}
+
+/**
+ * A value as the setup wizard writes it (`'...'`, an apostrophe inside as
+ * `'\''`), or as a hand-edited dotenv line writes it (`"..."` or bare).
+ */
+function unquote(v: string): string {
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replaceAll("'\\''", "'");
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1);
+  return v;
 }
 
 export interface WranglerConfig {

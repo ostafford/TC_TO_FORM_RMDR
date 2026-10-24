@@ -59,6 +59,13 @@ describe("parseDevVars", () => {
   it("reads KEY=VALUE, skipping comments and blanks, removing quotes", () => {
     expect(parseDevVars('# c\n\nA=1\nB="two"\nC=a=b\n  D = x \n')).toEqual({ A: "1", B: "two", C: "a=b", D: "x" });
   });
+
+  it("reads values as the setup wizard writes them: single-quoted, an apostrophe as '\\''", () => {
+    expect(parseDevVars("WHERE_TO_FIND='Today'\\''s checklist'\nCT_PUBLISHER_NAME='Reminders (Automated)'\n")).toEqual({
+      WHERE_TO_FIND: "Today's checklist",
+      CT_PUBLISHER_NAME: "Reminders (Automated)",
+    });
+  });
 });
 
 describe("checkSettings", () => {
