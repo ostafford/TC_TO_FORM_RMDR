@@ -5,8 +5,9 @@
  * `check_in`.
  */
 /**
- * What a Deployment POSTs here (#36 sends them). Never staff data beyond what
- * the Failure Alert itself already names.
+ * What a Deployment POSTs here (#36 sends them). Never staff names: the
+ * issues are on a public repo, so the Deployment sends its alerts with counts
+ * in place of names (the Alerts Channel keeps the names).
  *
  *  - `alert`: a Failure Alert (`state: "raised"`) or its all clear
  *    (`"cleared"`), with the same text the Alerts Channel gets.

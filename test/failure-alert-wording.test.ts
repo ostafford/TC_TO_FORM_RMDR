@@ -135,3 +135,17 @@ describe("the #34 alerts", () => {
     );
   });
 });
+
+describe("for the Integrator Relay (#36)", () => {
+  it("names nobody: counts only, the Action line kept", () => {
+    const sends = [send("Jordan Lee"), send("Sam Patel"), send("Alex Kim", { kind: "escalation", outcome: "unconfirmed" })];
+    const alert = messagesNotSending({ sinceMinutes: 63, cause: "Connecteam not responding", sends, anonymous: true });
+    expect(alert).toContain("Undelivered: 2 reminders\nUnconfirmed: 1 escalation\n");
+    const clear = allClear({ recovered: "key", sends: sends.map((s) => ({ ...s, outcome: "skipped" as const })), anonymous: true });
+    expect(clear).toBe(
+      "ALL CLEAR\n\nConnecteam accepts the API key again.\nSkipped (over an hour late): 2 reminders, 1 escalation, named in the Alerts Channel\n\n" +
+        "Action: follow these up by hand if needed.",
+    );
+    for (const text of [alert, clear]) for (const name of ["Jordan", "Sam", "Alex"]) expect(text).not.toContain(name);
+  });
+});

@@ -4,6 +4,7 @@
  * (the tracked wrangler.jsonc stays a blank template).
  */
 import type { CreditRules } from "./crediting/choose.js";
+import type { RelaySettings } from "./relay/send.js";
 
 export interface Env {
   DB: D1Database;
@@ -29,6 +30,11 @@ export interface Env {
   TASK_BOARD_ID?: string;
   /** The chat channel Failure Alerts are posted to (#33). */
   ALERTS_CHANNEL_ID: string;
+  /** Optional, all three or none: the Integrator Relay (#36). */
+  INTEGRATOR_RELAY_URL?: string;
+  INTEGRATOR_CLIENT_SLUG?: string;
+  /** A secret. */
+  INTEGRATOR_RELAY_SECRET?: string;
 }
 
 export interface Settings {
@@ -48,6 +54,12 @@ export interface Settings {
   reminderTask: { boardId: string } | null;
   /** The Alerts Channel's conversation id. */
   alertsChannelId: string;
+  /**
+   * Where Failure Alerts and check-ins also go (#36), or `null` when the
+   * Integrator Relay isn't set up. Not a problem when it isn't: a Deployment
+   * runs the same without it.
+   */
+  relay: RelaySettings | null;
 }
 
 /** The Deployment's settings, or the names of the ones that are missing or malformed. */
@@ -86,7 +98,15 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     shiftDateQuestionId: String(env.SHIFT_DATE_QUESTION_ID ?? "").trim(),
     reminderTask: null,
     alertsChannelId: text("ALERTS_CHANNEL_ID"),
+    relay: null,
   };
+  const relay = {
+    url: String(env.INTEGRATOR_RELAY_URL ?? "").trim(),
+    clientSlug: String(env.INTEGRATOR_CLIENT_SLUG ?? "").trim(),
+    secret: String(env.INTEGRATOR_RELAY_SECRET ?? "").trim(),
+  };
+  // Half set up is off: missing pieces must never stop the Deployment itself.
+  if (relay.url && relay.clientSlug && relay.secret) settings.relay = relay;
   const taskSwitch = String(env.REMINDER_TASK_ENABLED ?? "").trim();
   if (taskSwitch && taskSwitch !== "true" && taskSwitch !== "false") problems.push("REMINDER_TASK_ENABLED");
   if (taskSwitch === "true") settings.reminderTask = { boardId: text("TASK_BOARD_ID") };

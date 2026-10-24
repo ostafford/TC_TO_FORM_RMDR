@@ -3,6 +3,10 @@
   "name": "clock-out-form-reminder",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-15",
+  // A Deployment hosted on the integrator's own account calls the Integrator
+  // Relay's *.workers.dev URL on that same account; without this, plain
+  // fetch() to it gets a 404 (playbook: "Same-zone fetch() 404", #36).
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "observability": { "enabled": true },
 
   // TEMPLATE: leave every value below blank here. Each Deployment's own values
