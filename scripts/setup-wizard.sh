@@ -219,8 +219,8 @@ ENV_FILE="${WIZARD_ENV_FILE:-.dev.vars}"
 
 # Every step in the order setup runs them, and the ones --step can rerun (#19).
 STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test)
-# Built so far; the rest arrive with #38 to #41.
-BUILT_STEPS=(key)
+# Built so far; the rest arrive with #39 to #41.
+BUILT_STEPS=(key timezone form timings quiet-hours)
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   RED=$(tput setaf 1)
@@ -289,6 +289,73 @@ wr_quiet() {
   { printf '\n$ wrangler %s   (exit %s, %s)\n' "$*" "$rc" "$(date +%H:%M:%S)"; printf '%s\n' "$WR_OUT"; } >> "$WIZARD_DETAILS"
   chmod 600 "$WIZARD_DETAILS" 2>/dev/null || true
   return "$rc"
+}
+
+# ask_default VAR "Prompt" DEFAULT: read a value into $VAR; Enter takes
+# DEFAULT (shown in brackets). Visible input, edited with Readline. Fails at
+# EOF with no input.
+ask_default() {
+  # Underscored locals, so they can't hide the caller's variable of the same name.
+  local _var="$1" _prompt="$2" _def="$3" _in _s=$'\001' _e=$'\002' _p _rc=0
+  _p="  $_s$BOLD$_e$_prompt$_s$RESET$_e "
+  [[ -n "$_def" ]] && _p+="$_s$DIM$_e[$_def]$_s$RESET$_e "
+  read -e -r -p "$_p" _in || _rc=1
+  if (( _rc )) && [[ -z "$_in" ]]; then return 1; fi
+  [[ -z "$_in" ]] && _in="$_def"
+  printf -v "$_var" '%s' "$_in"
+}
+
+# choose VAR "Prompt" DEFAULT LOWEST LABEL...: number the labels from 1, then
+# read a choice into $VAR until it's one of them (or 0, when LOWEST is 0).
+choose() {
+  local var="$1" prompt="$2" def="$3" lowest="$4" i=1 l
+  shift 4
+  for l in "$@"; do printf '    %s%3d)%s %s\n' "$BLUE" "$i" "$RESET" "$l"; i=$((i + 1)); done
+  while :; do
+    ask_default "$var" "$prompt" "$def" || return 1
+    if [[ "${!var}" =~ ^[0-9]+$ ]] && (( 10#${!var} >= lowest && 10#${!var} <= $# )); then
+      printf -v "$var" '%d' "$((10#${!var}))"
+      return 0
+    fi
+    fail "Type a number from the list."
+  done
+}
+
+# warn_long "text": a warning wrapped at 76 columns, continuation lines under the text.
+warn_long() {
+  local line first=1
+  while IFS= read -r line; do
+    if [[ -n "$first" ]]; then warn "$line"; first=""; else printf '    %s%s%s\n' "$YELLOW" "$line" "$RESET"; fi
+  done < <(printf '%s\n' "$1" | fold -s -w 72 | sed 's/ *$//')
+}
+
+# helper ARGS...: scripts/wizard-helper.ts, its output left in $HELPER_OUT.
+# Its exit status says how it went: 0 done, 1 what was typed won't do,
+# 3 the key was rejected, 4 Connecteam couldn't be read.
+helper() {
+  local rc=0
+  HELPER_OUT=$(CT_API_KEY="${CT_API_KEY:-}" npm run --silent wizard-helper -- "$@" < /dev/null 2>&1) || rc=$?
+  return "$rc"
+}
+
+# example_from_helper ARGS...: the worked example the helper builds, shown as an Example.
+example_from_helper() {
+  local lines=() l
+  helper "$@" || { note "$HELPER_OUT"; return 0; }
+  while IFS= read -r l; do lines+=("$l"); done <<<"$HELPER_OUT"
+  example "${lines[@]}"
+}
+
+# need_key: the saved API key, for a step rerun on its own.
+need_key() {
+  [[ -n "${CT_API_KEY:-}" ]] || CT_API_KEY=$(_existing CT_API_KEY || true)
+  [[ -n "$CT_API_KEY" ]] || { fail "No API key saved yet. Run the key step first: npm run setup -- --step key"; exit 1; }
+}
+
+# saved_or KEY DEFAULT: the value saved in .dev.vars, or DEFAULT.
+saved_or() {
+  local v; v=$(_existing "$1" || true)
+  printf '%s' "${v:-$2}"
 }
 
 # json_get FIELD: read one field of the JSON on stdin.
@@ -393,10 +460,247 @@ s_key() {
   next_up "your time zone."
 }
 
-# Each built step by --step name.
+# The suggested defaults (#19): 30-minute Grace Period, 4-hour escalation
+# delay, Quiet Hours 9 pm to 7 am.
+DEFAULT_GRACE=30
+DEFAULT_DELAY=240
+DEFAULT_QUIET_FROM="21:00"
+DEFAULT_QUIET_UNTIL="07:00"
+DEFAULT_WHERE="the Forms tab in the Connecteam app"
+
+s_timezone() {
+  stage "Time zone"
+  why "Quiet hours (two steps from now) follow this time zone's clock, daylight" \
+      "saving included. Shift times in messages always show the time where the" \
+      "shift was recorded, so staff in another zone still see their own times."
+  todo "Check the time zone below, read from your Connecteam time clock." \
+       "Press Enter to keep it, or type another."
+  example "Australia/Sydney, Australia/Perth, Pacific/Auckland, Europe/London"
+  need_key
+  local rc=0 suggested="" zone name current input
+  helper time-zones || rc=$?
+  if (( rc == 0 )); then
+    suggested=$(printf '%s\n' "$HELPER_OUT" | head -n1 | cut -f1)
+    while IFS=$'\t' read -r zone name; do ok "Time clock \"$name\" is set to $zone."; done <<<"$HELPER_OUT"
+    if (( $(printf '%s\n' "$HELPER_OUT" | cut -f1 | sort -u | wc -l) > 1 )); then
+      warn_long "Your time clocks use different time zones. Pick the one most of your admins work in: quiet hours follow it."
+    fi
+  else
+    fail "$HELPER_OUT"
+    (( rc == 3 )) && exit 1
+    note "Type the time zone instead."
+  fi
+  current=$(_existing TIME_ZONE || true)
+  if [[ -n "$current" && -n "$suggested" && "$current" != "$suggested" ]]; then
+    note "Saved now: $current. Enter keeps it."
+  fi
+  while :; do
+    ask_default input "Time zone:" "${current:-$suggested}" || { fail "No time zone given."; exit 1; }
+    if helper zone "$input"; then break; fi
+    fail "$HELPER_OUT"
+  done
+  save TIME_ZONE "$HELPER_OUT" "the time zone ($HELPER_OUT)"
+  next_up "the form staff must submit."
+}
+
+# The form chosen in s_form, for the steps after it.
+FORM_NAME=""
+FORM_DATES=""
+
+s_form() {
+  stage "Compliance Form"
+  why "This is the form every staff member must submit for every shift. The" \
+      "reminder checks for a real submission of it, not a tick box."
+  todo "Pick the form from your account's list below." \
+       "A ⚠ means the form is set up in a way that can't work once per shift. You'll see why when you pick it."
+  example "\"Daily Compliance Form\": staff fill it in at the end of every shift."
+  need_key
+  local rc=0 ids=() labels=() id label current def="" i n warnings w
+  helper forms || rc=$?
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  while IFS=$'\t' read -r id label; do ids+=("$id"); labels+=("$label"); done <<<"$HELPER_OUT"
+  current=$(_existing COMPLIANCE_FORM_ID || true)
+  for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$current" ]] && def=$((i + 1)); done
+  while :; do
+    printf '\n  Forms in your account:\n'
+    choose n "Which form? (number)" "$def" 1 "${labels[@]}" || { fail "No form chosen."; exit 1; }
+    id="${ids[$((n - 1))]}"
+    rc=0; helper form "$id" || rc=$?
+    (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+    FORM_NAME=$(grep '^name' <<<"$HELPER_OUT" | cut -f2-)
+    warnings=$(grep '^warning' <<<"$HELPER_OUT" | cut -f2- || true)
+    [[ -z "$warnings" ]] && break
+    printf '\n'
+    while IFS= read -r w; do warn_long "$w"; done <<<"$warnings"
+    confirm "Use \"$FORM_NAME\" anyway?" && break
+  done
+  FORM_DATES=$(grep '^date' <<<"$HELPER_OUT" | cut -f2- || true)
+  save COMPLIANCE_FORM_ID "$id" "the Compliance Form (\"$FORM_NAME\")"
+  next_up "which question in it names the shift's date."
+}
+
+s_dateq() {
+  stage "Shift date question (optional, recommended)"
+  why "If someone misses the form on Monday and catches up on Wednesday, the" \
+      "reminder needs to know which shift it's for. A date question in the form" \
+      "(\"Which shift is this form for?\") answers that exactly. Without one, a" \
+      "submission counts for the shift it was made during or just after, or else" \
+      "the person's oldest missed form, which is usually right."
+  todo "Pick the question that asks for the shift's date, or 0 for none."
+  example "Jordan misses the form after Monday's shift and submits it on Wednesday," \
+          "answering \"Which shift is this form for?\" with Monday. It counts for Monday."
+  local qids=() titles=() qid title current def=1 i n
+  if [[ -z "$FORM_DATES" ]]; then
+    warn_long "\"$FORM_NAME\" has no date question. Consider adding one (\"Which shift is this form for?\"), then rerun: npm run setup -- --step form"
+    save SHIFT_DATE_QUESTION_ID "" "the shift date question (none: submissions go by time)"
+    next_up "where staff find the form."
+    return
+  fi
+  while IFS=$'\t' read -r qid title; do qids+=("$qid"); titles+=("$title"); done <<<"$FORM_DATES"
+  current=$(_existing SHIFT_DATE_QUESTION_ID || true)
+  for i in "${!qids[@]}"; do [[ "${qids[$i]}" == "$current" ]] && def=$((i + 1)); done
+  printf '\n  Date questions in "%s":\n' "$FORM_NAME"
+  choose n "Which one asks for the shift's date? (number, or 0 for none)" "$def" 0 "${titles[@]}" \
+    || { fail "No answer given."; exit 1; }
+  if (( n == 0 )); then
+    save SHIFT_DATE_QUESTION_ID "" "the shift date question (none: submissions go by time)"
+  else
+    save SHIFT_DATE_QUESTION_ID "${qids[$((n - 1))]}" "the shift date question (\"${titles[$((n - 1))]}\")"
+  fi
+  next_up "where staff find the form."
+}
+
+s_where() {
+  stage "Where staff find the form"
+  why "Connecteam can't give us a link to the form, so messages say where to find" \
+      "it, in your own words. Your phrase finishes the sentence" \
+      "\"You'll find it in …\"."
+  todo "Finish the sentence below, or press Enter to keep the suggestion."
+  example "You'll find it in the Forms tab in the Connecteam app." \
+          "You'll find it in the \"End of shift\" folder under Forms."
+  local input
+  while :; do
+    ask_default input "You'll find it in" "$(saved_or WHERE_TO_FIND "$DEFAULT_WHERE")" || { fail "Nothing given."; exit 1; }
+    if helper where "$input"; then break; fi
+    fail "$HELPER_OUT"
+  done
+  note "Messages will say: \"Where: $HELPER_OUT\""
+  save WHERE_TO_FIND "$HELPER_OUT" "where staff find the form"
+  next_up "how long people get before a reminder."
+}
+
+s_grace() {
+  stage "Grace period"
+  why "After someone clocks out, the reminder waits this long before checking for" \
+      "the form, so people who fill it in straight away never get a message."
+  todo "Type the grace period in minutes, or press Enter to keep the suggestion."
+  local def input
+  def=$(saved_or GRACE_PERIOD_MINUTES "$DEFAULT_GRACE")
+  example_from_helper grace-example "$def"
+  while :; do
+    ask_default input "Grace period in minutes?" "$def" || { fail "Nothing given."; exit 1; }
+    if helper duration grace "$input"; then break; fi
+    fail "$HELPER_OUT"
+  done
+  local minutes="$HELPER_OUT"
+  helper duration-label "$minutes" || HELPER_OUT="$minutes minutes"
+  save GRACE_PERIOD_MINUTES "$minutes" "the grace period ($HELPER_OUT)"
+  next_up "how long before your admins are told."
+}
+
+s_delay() {
+  stage "Escalation delay"
+  why "If the form is still missing this long after the reminder, your admins and" \
+      "the employee's direct manager are told. It gives the employee a fair chance" \
+      "to fix it first."
+  todo "Type the delay in hours (1.5 or 90m work too), or press Enter to keep the suggestion."
+  local grace def shown input
+  grace=$(saved_or GRACE_PERIOD_MINUTES "$DEFAULT_GRACE")
+  def=$(saved_or ESCALATION_DELAY_MINUTES "$DEFAULT_DELAY")
+  if (( def % 60 == 0 )); then shown=$((def / 60)); else shown="${def}m"; fi
+  example_from_helper delay-timeline "$grace" "$def"
+  while :; do
+    ask_default input "Escalation delay in hours?" "$shown" || { fail "Nothing given."; exit 1; }
+    if helper duration delay "$input"; then break; fi
+    fail "$HELPER_OUT"
+  done
+  local minutes="$HELPER_OUT"
+  if [[ "$minutes" != "$def" ]]; then
+    printf '\n  With that delay:\n'
+    example_from_helper delay-timeline "$grace" "$minutes"
+  fi
+  helper duration-label "$minutes" || HELPER_OUT="$minutes minutes"
+  save ESCALATION_DELAY_MINUTES "$minutes" "the escalation delay ($HELPER_OUT)"
+  next_up "quiet hours."
+}
+
+s_quiet() {
+  stage "Quiet hours"
+  why "Escalations go to every admin, so they shouldn't arrive in the middle of the" \
+      "night. During quiet hours they wait, then go out as one summary per admin" \
+      "when quiet hours end. Reminders to the employee are never held: they've just" \
+      "finished work and can fix it now."
+  todo "Choose whether to use quiet hours. A team that works around the clock may want them off." \
+       "If you use them, type when they start and end, or press Enter to keep the suggestions."
+  local grace delay on qfrom quntil input
+  grace=$(saved_or GRACE_PERIOD_MINUTES "$DEFAULT_GRACE")
+  delay=$(saved_or ESCALATION_DELAY_MINUTES "$DEFAULT_DELAY")
+  on=$(saved_or QUIET_HOURS_ENABLED true)
+  qfrom=$(saved_or QUIET_HOURS_FROM "$DEFAULT_QUIET_FROM")
+  quntil=$(saved_or QUIET_HOURS_UNTIL "$DEFAULT_QUIET_UNTIL")
+  example_from_helper quiet-example "$grace" "$delay" "$qfrom" "$quntil"
+  while :; do
+    ask_default input "Use quiet hours? (y/n)" "$([[ "$on" == false ]] && echo n || echo y)" || { fail "No answer given."; exit 1; }
+    [[ "$input" =~ ^[YyNn] ]] && break
+    fail "Type y or n."
+  done
+  if [[ "$input" =~ ^[Nn] ]]; then
+    save QUIET_HOURS_ENABLED false "quiet hours (off)"
+    warn "Escalations will go out at any hour, day or night."
+    next_up "who receives escalations."
+    return
+  fi
+  while :; do
+    helper clock-label "$qfrom" || HELPER_OUT="$qfrom"
+    while :; do
+      ask_default input "Quiet from?" "$HELPER_OUT" || { fail "No answer given."; exit 1; }
+      if helper clock "$input"; then qfrom="$HELPER_OUT"; break; fi
+      fail "$HELPER_OUT"
+    done
+    helper clock-label "$quntil" || HELPER_OUT="$quntil"
+    while :; do
+      ask_default input "Quiet until?" "$HELPER_OUT" || { fail "No answer given."; exit 1; }
+      if helper clock "$input"; then quntil="$HELPER_OUT"; break; fi
+      fail "$HELPER_OUT"
+    done
+    [[ "$qfrom" != "$quntil" ]] && break
+    fail "Quiet hours can't start and end at the same time. To have none, rerun this step and answer n."
+  done
+  if [[ "$on" == false || "$qfrom" != "$(saved_or QUIET_HOURS_FROM "$DEFAULT_QUIET_FROM")" || "$quntil" != "$(saved_or QUIET_HOURS_UNTIL "$DEFAULT_QUIET_UNTIL")" ]]; then
+    printf '\n  With those times:\n'
+    example_from_helper quiet-example "$grace" "$delay" "$qfrom" "$quntil"
+  fi
+  save QUIET_HOURS_ENABLED true "quiet hours (on)"
+  save QUIET_HOURS_FROM "$qfrom" "when quiet hours start"
+  save QUIET_HOURS_UNTIL "$quntil" "when quiet hours end"
+  next_up "who receives escalations."
+}
+
+# Each built step by --step name, and how many stages it shows.
 run_step() {
   case "$1" in
     key) s_key ;;
+    timezone) s_timezone ;;
+    form) s_form; s_dateq; s_where ;;
+    timings) s_grace; s_delay ;;
+    quiet-hours) s_quiet ;;
+  esac
+}
+step_stages() {
+  case "$1" in
+    form) echo 3 ;;
+    timings) echo 2 ;;
+    *) echo 1 ;;
   esac
 }
 
@@ -460,7 +764,7 @@ if [[ -z "${WIZARD_LOG:-}" && -t 0 && -t 1 ]] && command -v script >/dev/null 2>
 fi
 
 if [[ -n "$ONLY" ]]; then
-  TOTAL_STAGES=1
+  TOTAL_STAGES=$(step_stages "$ONLY")
   run_step "$ONLY"
   printf '\n'
   note "Saved to $ENV_FILE. Apply it with: npm run deploy"
@@ -469,14 +773,18 @@ if [[ -n "$ONLY" ]]; then
   return
 fi
 
-TOTAL_STAGES=2
+TOTAL_STAGES=9
 banner "Clock-out Form Reminder: setup"
 s_cloudflare
 s_key
+s_timezone
+s_form; s_dateq; s_where
+s_grace; s_delay
+s_quiet
 finish
-note "This version of the wizard ends here: the remaining steps (time zone onward)"
-note "arrive with #38 to #41. Until then, fill in the rest of $ENV_FILE by hand,"
-note "following docs/RUNBOOK.md."
+note "This version of the wizard ends here: the remaining steps (escalation"
+note "recipients onward) arrive with #39 to #41. Until then, fill in the rest of"
+note "$ENV_FILE by hand, following docs/RUNBOOK.md."
 }
 
 run_wizard "$@"; exit

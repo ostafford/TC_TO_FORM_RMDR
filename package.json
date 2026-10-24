@@ -18,7 +18,8 @@
     "relay:secret": "wrangler secret put --config relay/wrangler.jsonc",
     "relay:teardown": "wrangler delete --config relay/wrangler.jsonc",
     "setup": "bash scripts/setup-wizard.sh",
-    "check-api-key": "tsx scripts/check-api-key.ts"
+    "check-api-key": "tsx scripts/check-api-key.ts",
+    "wizard-helper": "tsx scripts/wizard-helper.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
