@@ -185,33 +185,47 @@ describe("a setting pointing at something gone", () => {
     expect(h.ct.dms.map((d) => d.userId)).toEqual([JORDAN.userId]);
   });
 
-  it("the publisher: a DM 404 to a user who still exists alerts; DMs wait; a new publisher lifts it and late sends are skipped", async () => {
+  it("the publisher: DMs wait; its alert can't be posted as it either; a new publisher lifts it and late sends are skipped", async () => {
     await clockOut();
-    h.ct.failAll("POST", DMS, 404);
+    h.ct.deletePublisher(4242);
     await h.tick(DUE);
     await h.tick(DUE + MINUTE);
-    expect(posts()).toEqual([
-      "ALERT · SENDER NOT FOUND\n\n" +
-        "Setting: Sender (custom publisher) (id 4242)\n" +
-        "Cause: deleted or no longer available\n\n" +
-        'Action: rerun setup step "Sender name".',
-    ]);
+    // The Alerts Channel is posted to as the same publisher.
+    const alertPosts = () => h.ct.calls.filter((c) => c.path === `/chat/v1/conversations/${ALERTS_CHANNEL}/message`);
+    expect(alertPosts()).toHaveLength(1);
+    expect(h.ct.posts).toEqual([]);
     const dmCalls = () => h.ct.calls.filter((c) => c.path.startsWith(DMS));
     for (let m = 2; m < 30; m++) await h.tick(DUE + m * MINUTE);
     expect(dmCalls()).toHaveLength(1);
 
-    h.ct.recover();
     h.configure({ CT_PUBLISHER_ID: "4243" });
     await h.tick(DUE + 90 * MINUTE);
     expect(dmCalls()).toHaveLength(1);
-    expect(posts()[1]).toContain("Skipped (over an hour late):\n- Reminder: Jordan Lee, Tue 6 Oct\n");
+    expect(posts()).toEqual([
+      "ALL CLEAR\n\n" +
+        "The sender setting works again.\n" +
+        "Skipped (over an hour late):\n" +
+        "- Reminder: Jordan Lee, Tue 6 Oct\n\n" +
+        "Action: follow these up by hand if needed.",
+    ]);
+  });
+
+  it("the publisher: found gone on an alert's post holds DMs too", async () => {
+    await clockOut();
+    h.ct.failAll("POST", DMS, 503);
+    for (const m of [0, 1, 3, 7, 15, 31, 63]) await h.tick(DUE + m * MINUTE);
+    h.ct.recover().deletePublisher(4242);
+    await h.tick(DUE + 64 * MINUTE); // the Messages alert's post finds it gone
+    await clockOut(AVERY, 70 * MINUTE);
+    await h.tick(DUE + 70 * MINUTE);
+    expect(h.ct.calls.filter((c) => c.path === `${DMS}${AVERY.userId}`)).toEqual([]);
   });
 
   it("uses up none of a step's tries while it waits: after the block lifts, a failing send still gets all 7", async () => {
     await clockOut();
-    h.ct.failAll("POST", DMS, 404);
+    h.ct.deletePublisher(4242);
     await h.tick(DUE);
-    h.ct.recover().failAll("POST", DMS, 503);
+    h.ct.failAll("POST", DMS, 503);
     h.configure({ CT_PUBLISHER_ID: "4243" });
     const lifted = DUE + 5 * MINUTE;
     const before = h.ct.calls.filter((c) => c.path.startsWith(DMS)).length;
@@ -232,7 +246,7 @@ describe("a setting pointing at something gone", () => {
   it("the task board: Reminders carry on; creates wait, then go to the new board", async () => {
     setUp({ REMINDER_TASK_ENABLED: "true", TASK_BOARD_ID: "board-7" });
     await clockOut();
-    h.ct.failAll("POST", `${TASKS}board-7/`, 404);
+    h.ct.deleteBoard("board-7");
     await h.tick(DUE);
     await h.tick(DUE + MINUTE);
     expect(posts()).toEqual([

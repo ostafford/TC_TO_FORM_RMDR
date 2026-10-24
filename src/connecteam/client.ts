@@ -209,29 +209,31 @@ export class ConnecteamClient {
     return unwrap(r, (b) => (b as Wrapped<{ conversations: Conversation[] }>).data.conversations);
   }
 
-  /**
-   * DM a user as the custom publisher. Text is clamped to 500 chars. A 404
-   * could be the user or the publisher (the response doesn't say; unchecked
-   * live, #34), so it looks the user up: a user who still exists means the
-   * publisher is gone.
-   */
+  /** DM a user as the custom publisher. Text is clamped to 500 chars. Notes a missing publisher (#34). */
   async sendDirectMessage(userId: number, text: string): Promise<CtResult<null>> {
     const r = await this.#call("POST", `/chat/v1/conversations/privateMessage/${userId}`, {
       senderId: this.#publisherId,
       text: clamp(text),
     });
-    if (r.kind === "client_error" && r.status === 404) {
-      const user = await this.getUser(userId);
-      if (user.outcome === "ok" && user.data) this.gone.add("publisher");
-    }
+    this.#notePublisher(r);
     return unwrap(r, () => null);
+  }
+
+  /**
+   * A missing publisher answers 404 "Sender id not found", checked before the
+   * recipient or conversation, so any other 404 is about them (tested live
+   * 2026-10-24, int_MCP research/2026-10-24-error-responses-for-missing-settings.md).
+   */
+  #notePublisher(r: HttpResponse): void {
+    if (r.kind === "client_error" && r.status === 404 && detailOf(r.body) === "Sender id not found") this.gone.add("publisher");
   }
 
   /**
    * Create a published Quick Task. One user makes an individual task (two or
    * more would make one group task). Not idempotent: a repeat makes a second
    * task, so the caller stores the returned id before anything could repeat it.
-   * A 404 notes the board as gone (#34).
+   * Notes a missing board (#34): a 400 saying the board id was "not found in
+   * course_modules", not a 404 (tested live 2026-10-24, as above).
    */
   async createTask(boardId: string, task: QuickTask): Promise<CtResult<{ id: string }>> {
     const r = await this.#call("POST", `/tasks/v1/taskboards/${encodeURIComponent(boardId)}/tasks`, {
@@ -240,8 +242,7 @@ export class ConnecteamClient {
       title: task.title,
       description: { content: task.description },
     });
-    // No task id in the path: a 404 is the board (#34).
-    if (r.kind === "client_error" && r.status === 404) this.gone.add("board");
+    if (r.kind === "client_error" && r.status === 400 && /not found in course_modules/.test(errorOf(r.body))) this.gone.add("board");
     return unwrap(r, (b) => {
       const id = (b as Wrapped<{ id: string }>).data.id;
       if (typeof id !== "string" || !id) throw new Error("no task id");
@@ -292,6 +293,7 @@ export class ConnecteamClient {
       senderId: this.#publisherId,
       text: clamp(text),
     });
+    this.#notePublisher(r);
     return unwrap(r, () => null);
   }
 }
@@ -306,6 +308,17 @@ export interface QuickTask {
 interface Wrapped<T> {
   requestId: string;
   data: T;
+}
+
+/** An error body's `detail` (most of the API) or `error` (Quick Tasks), or blank. */
+function detailOf(body: unknown): string {
+  const o = asObject(body);
+  return typeof o?.detail === "string" ? o.detail : "";
+}
+
+function errorOf(body: unknown): string {
+  const o = asObject(body);
+  return typeof o?.error === "string" ? o.error : "";
 }
 
 function clamp(text: string): string {

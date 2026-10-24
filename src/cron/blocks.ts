@@ -3,7 +3,8 @@
  *  - key: Connecteam rejected the API key (a 401 or 403 on any call). Every
  *    step waits: the run stops at once.
  *  - form, publisher, board: the Compliance Form, the custom publisher or the
- *    task board is gone (a 404 on it). Only the steps that need it wait.
+ *    task board is gone (a 404 on the form, a 404 "Sender id not found", a
+ *    400 on a create naming the board). Only the steps that need it wait.
  * A block lifts once its setting changes, as the alert's Action asks (the
  * client reran that setup step; the key is compared by hash, never stored).
  * The key and the form, which one call can test, are also re-checked every
@@ -54,7 +55,8 @@ export function held(deps: DueStepDeps, step: HeldStep): boolean {
 
 /** Whether a failure was caused by a block, so it doesn't count toward the step's backoff. */
 export function causedByBlock(deps: DueStepDeps, status: number | null | undefined): boolean {
-  return deps.ct.keyRejected || (status === 404 && deps.ct.gone.size > 0);
+  // A missing board answers 400, the rest 404 (tested live 2026-10-24).
+  return deps.ct.keyRejected || (deps.ct.gone.size > 0 && (status === 404 || status === 400));
 }
 
 /** The setting each block was found on, as stored with it: the key only as a hash. */

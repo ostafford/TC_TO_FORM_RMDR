@@ -11,7 +11,9 @@
  * mid-call never hears back (#31). `failAll` keeps answering matching calls
  * with a status until `recover()`, as an outage does, and a status of `null`
  * drops the connection instead, as a timeout does (#33). Channel posts (the
- * Failure Alerts) land in `posts`.
+ * Failure Alerts) land in `posts`. A deleted publisher or task board answers
+ * as live (#34): DMs and channel posts 404 "Sender id not found", a create
+ * 400 naming the board.
  *
  * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
  * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
@@ -88,6 +90,20 @@ export class FakeConnecteam {
   readonly dms: SentDm[] = [];
   readonly posts: { conversationId: string; senderId: number; text: string }[] = [];
   readonly #outages: Array<{ method: string; pathPrefix: string; status: number | null }> = [];
+  readonly #deletedPublishers = new Set<number>();
+  readonly #deletedBoards = new Set<string>();
+
+  /** The custom publisher is deleted in Connecteam. */
+  deletePublisher(id: number): this {
+    this.#deletedPublishers.add(id);
+    return this;
+  }
+
+  /** The task board is deleted in Connecteam. */
+  deleteBoard(id: string): this {
+    this.#deletedBoards.add(id);
+    return this;
+  }
   readonly users = new Map<number, FakeUser>();
   readonly forms = new Map<number, string>();
   readonly submissions: FakeSubmission[] = [];
@@ -205,6 +221,12 @@ export class FakeConnecteam {
   }
 
   #answer({ method, path, query, body }: RecordedCall): Response {
+    // Checked before the recipient or conversation (tested live 2026-10-24).
+    const chat = method === "POST" && path.startsWith("/chat/v1/conversations/");
+    if (chat && this.#deletedPublishers.has((body as { senderId: number }).senderId)) {
+      return json(404, { detail: "Sender id not found" });
+    }
+
     if (method === "GET" && path === "/users/v1/users") {
       const all = [...this.users.values()];
       // Connecteam's default userStatus is `active`; asking by id finds archived users too.
@@ -290,6 +312,14 @@ export class FakeConnecteam {
     }
 
     const board = path.match(/^\/tasks\/v1\/taskboards\/([^/]+)\/tasks$/);
+    if (method === "POST" && board && this.#deletedBoards.has(decodeURIComponent(board[1]!))) {
+      const id = decodeURIComponent(board[1]!);
+      return json(400, {
+        details: null,
+        error: `tasks object ids [${id}] not found in course_modules [16273701] - tasks ids not found in course_modules`,
+        path,
+      });
+    }
     if (method === "POST" && board) {
       const b = body as Omit<FakeTask, "id" | "boardId">;
       const id = `task-${++this.#nextTask}`;
