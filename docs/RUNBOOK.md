@@ -8,7 +8,9 @@ covers the Cloudflare account and the Connecteam API key (#37), and the
 time zone, Compliance Form, Shift Date Question, "where to find it" phrase,
 Grace Period, escalation delay and Quiet Hours (#38), and the escalation
 recipients, Reminder Task, sender, Alerts Channel, support link and the
-Shift Entry tip (#39); the rest arrives with #40 and #41.
+Shift Entry tip (#39), then the settings summary, "Turn it on" and the test
+message (#40). Rerunning a step with an impact preview, and the `webhook`
+step, arrive with #41.
 
 ## Deploying
 
@@ -66,7 +68,33 @@ npm run typecheck && npm test
 npm run deploy
 ```
 
-The Workers **Paid** plan is required (ADR-0002).
+The Workers **Paid** plan is required (ADR-0002). Then subscribe the
+webhooks (next section).
+
+The wizard's "Turn it on" step does all of this in this order: keep (or make)
+`CT_WEBHOOK_SECRET`, reuse the database already saved or named
+`clock-out-form-reminder` (else create it), `deploy:config --check-live`,
+migrations, deploy, the secrets, then the webhooks. Secrets go after the
+deploy because `secret put` on a Worker that doesn't exist yet stops to ask
+whether to create one.
+
+### Subscribing the webhooks
+
+Three subscriptions, all to the Worker's `https://…workers.dev/webhook`, each
+with `"secretKey": "<CT_WEBHOOK_SECRET>"` and `"isDisabled": false`, created with
+`POST /settings/v1/webhooks` (per the docs; the wizard sends exactly these):
+
+| `featureType` | `entityId` | `eventTypes` |
+|---|---|---|
+| `time_activity` | `null` (every time clock) | `clock_in`, `clock_out`, `auto_clock_out`, `admin_add`, `admin_edit`, `admin_delete`, and the eight `admin_approved_*` / `auto_approved_*` events (`scripts/lib/wizard-turn-on.ts`) |
+| `forms` | the Compliance Form id | `form_submission` |
+| `tasks` | the task board id (left out with no board) | `task_completed` |
+
+**Register once.** A second `POST` adds a second subscription and every event
+arrives twice. To change one, `PUT /settings/v1/webhooks/<id>` with the same
+body. A rerun of the wizard does that: it updates the subscriptions whose
+`url` is this Worker's, adds any missing, and removes repeats. It never
+touches another integration's.
 
 ### Updating
 

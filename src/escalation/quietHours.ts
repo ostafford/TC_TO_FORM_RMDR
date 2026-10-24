@@ -37,6 +37,12 @@ export function quietEnds(at: number, zone: string, q: QuietHours): number {
   return at;
 }
 
+/** The Unix seconds at which the local clock in `zone` reads `minutes` on the local day `at` falls on (the setup wizard's sample Shift, #40). */
+export function onLocalDay(at: number, zone: string, minutes: number): number {
+  const day = local(at, zone);
+  return wallClock(day.y, day.mo, day.d, minutes, zone);
+}
+
 /** The Unix seconds at which the local clock in `zone` reads `minutes` on that (possibly overflowing) date. */
 function wallClock(y: number, mo: number, d: number, minutes: number, zone: string): number {
   const asUtc = Date.UTC(y, mo - 1, d, Math.floor(minutes / 60), minutes % 60) / 1000;
