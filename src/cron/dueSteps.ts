@@ -6,8 +6,14 @@
  *  - the escalation point, the escalation delay after the Reminder: the check
  *    again, then an Escalation to each recipient if still nothing;
  * then each Reminder Task step that is due (./reminderTask.ts), then the
- * polling sweep (./sweep.ts). Failure Alerts go first (./failureAlerts.ts):
- * they report what earlier runs gave up on, and get the minute's first call.
+ * polling sweep (./sweep.ts). Before them, blocks that are fixed are lifted
+ * (./blocks.ts, #34), then Failure Alerts go (./failureAlerts.ts): they
+ * report what earlier runs found, and get the minute's first calls. Last, the
+ * blocks this run found and the daily allowance left are recorded for the
+ * next run.
+ *
+ * A block (a rejected API key, or a setting pointing at something gone)
+ * holds the steps that need it, without counting against them.
  *
  * A step that fails is tried again after doubling waits, and a send is given
  * up on after about an hour (./backoff.ts, #33). So is a send whose claim is
@@ -26,8 +32,9 @@ import type { Settings } from "../env.js";
 import { escalationRecipients } from "../escalation/recipients.js";
 import { escalation } from "../messages/escalation.js";
 import { reminderShiftEnded } from "../messages/reminder.js";
-import type { ShiftRow, Undelivered, WorkList } from "../store.js";
+import type { Block, ShiftRow, Undelivered, WorkList } from "../store.js";
 import { fullName, retryWait, undelivered } from "./backoff.js";
+import { causedByBlock, held, liftBlocks, pausedByKey, recordBlocks } from "./blocks.js";
 import { runFailureAlerts, type AlertResult } from "./failureAlerts.js";
 import { runTaskSteps, type TaskStepResult } from "./reminderTask.js";
 import { runSweep, type SweepResult } from "./sweep.js";
@@ -39,22 +46,47 @@ export interface DueStepDeps {
   /** Unix seconds: the cron's scheduled time. */
   now: number;
   log?: (event: Record<string, unknown>) => void;
+  /** The blocks in force this run (#34), set once they've been lifted or not. */
+  blocks?: ReadonlySet<Block>;
 }
 
 /** The most Shifts one run takes. */
 const BATCH = 25;
 
-export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "given_up" | "skipped" | "deferred";
+export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "given_up" | "skipped" | "deferred" | "held";
 
-export async function runDueSteps(deps: DueStepDeps): Promise<
-  Record<StepResult, number> & { alerts: AlertResult; tasks: Record<TaskStepResult, number>; sweep: SweepResult; paused: boolean }
+export async function runDueSteps(input: DueStepDeps): Promise<
+  Record<StepResult, number> & {
+    blocks: Block[];
+    alerts: AlertResult;
+    tasks: Record<TaskStepResult, number>;
+    sweep: SweepResult;
+    paused: boolean;
+  }
 > {
+  const deps: DueStepDeps = { ...input, blocks: await liftBlocks(input) };
   const alerts = await runFailureAlerts(deps);
-  const counts: Record<StepResult, number> = { submitted: 0, reminded: 0, escalated: 0, retry: 0, given_up: 0, skipped: 0, deferred: 0 };
-  for (const shift of await deps.store.takeDue(deps.now, BATCH)) {
-    if (deps.ct.minuteBudgetSpent()) {
+  const counts: Record<StepResult, number> = {
+    submitted: 0,
+    reminded: 0,
+    escalated: 0,
+    retry: 0,
+    given_up: 0,
+    skipped: 0,
+    deferred: 0,
+    held: 0,
+  };
+  // Held Shifts aren't even taken: they'd sit at the head of the queue.
+  for (const shift of held(deps, "shift") ? [] : await deps.store.takeDue(deps.now, BATCH)) {
+    if (deps.ct.stopped()) {
       await deps.store.release(shift.id);
       counts.deferred++;
+      continue;
+    }
+    // A block found mid-run.
+    if (held(deps, "shift")) {
+      await deps.store.release(shift.id);
+      counts.held++;
       continue;
     }
     const result =
@@ -67,11 +99,14 @@ export async function runDueSteps(deps: DueStepDeps): Promise<
   }
   // After the Shifts, so a task due from this run's Reminder is created alongside it.
   const tasks = await runTaskSteps(deps);
-  // Last: what is due goes first, and a Shift the sweep finds is due from the next run.
-  const sweep = await runSweep(deps);
+  // Last: what is due goes first, and a Shift the sweep finds is due from the next run. Paused, it waits too.
+  const sweep = pausedByKey(deps) ? { swept: 0, found: 0, failed: 0, deferred: 0 } : await runSweep(deps);
   const paused = deps.ct.minuteBudgetSpent();
   if (paused) (deps.log ?? (() => {}))({ evt: "rate_limit_pause", ...deps.ct.lastRateLimit });
-  return { ...counts, alerts, tasks, sweep, paused };
+  const blocks = await recordBlocks(deps);
+  const dayRemaining = deps.ct.lastRateLimit?.dayRemaining;
+  if (dayRemaining != null) await deps.store.setState("day_remaining", dayRemaining);
+  return { ...counts, blocks, alerts, tasks, sweep, paused };
 }
 
 async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
@@ -242,7 +277,8 @@ async function escalationPoint(shift: ShiftRow, deps: DueStepDeps): Promise<Step
 
 /**
  * The step failed: try it again after the next wait (./backoff.ts), or once
- * the waits are used up, give up on it.
+ * the waits are used up, give up on it. A failure caused by a block only
+ * waits for it to lift.
  */
 async function retry(
   shift: ShiftRow,
@@ -250,6 +286,12 @@ async function retry(
   detail: Record<string, unknown> & { status?: number | null },
   giveUp: GiveUp,
 ): Promise<StepResult> {
+  if (causedByBlock(deps, detail.status)) {
+    // It waits for the block to lift (./blocks.ts): no try used up.
+    (deps.log ?? (() => {}))({ evt: "step_held", shiftId: shift.id, ...detail });
+    await deps.store.release(shift.id);
+    return "held";
+  }
   const failures = shift.attempts + 1;
   (deps.log ?? (() => {}))({ evt: "step_failed", shiftId: shift.id, failures, ...detail });
   const wait = retryWait(failures);

@@ -64,6 +64,10 @@ export class ConnecteamClient {
   /** Rate-limit headers from the most recent call, for callers that back off. */
   lastRateLimit: RateLimit | null = null;
   #saw429 = false;
+  /** A call came back 401 or 403: Connecteam rejected the API key (#34). */
+  keyRejected = false;
+  /** Settings found pointing at something gone this run: a 404 on the Compliance Form, the publisher or the task board (#34). */
+  readonly gone = new Set<"form" | "publisher" | "board">();
 
   constructor(cfg: CtClientConfig) {
     this.#base = (cfg.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
@@ -81,7 +85,16 @@ export class ConnecteamClient {
     );
     if (r.kind !== "retryable") this.lastRateLimit = readRateLimit(r.headers);
     else if (r.status === 429) this.#saw429 = true;
+    if (r.kind === "client_error" && (r.status === 401 || r.status === 403)) this.keyRejected = true;
     return r;
+  }
+
+  /**
+   * Whether the run should stop calling (#31, #34): the minute's budget is
+   * spent, or Connecteam rejected the API key.
+   */
+  stopped(): boolean {
+    return this.keyRejected || this.minuteBudgetSpent();
   }
 
   /**
@@ -124,8 +137,10 @@ export class ConnecteamClient {
     }
   }
 
+  /** A 404 notes the form as gone (#34). */
   async getForm(formId: number): Promise<CtResult<Form>> {
     const r = await this.#call("GET", `/forms/v1/forms/${formId}`);
+    if (r.kind === "client_error" && r.status === 404) this.gone.add("form");
     return unwrap(r, (b) => {
       const form = (b as Wrapped<Form>).data;
       if (typeof form.formName !== "string") throw new Error("no formName");
@@ -194,12 +209,21 @@ export class ConnecteamClient {
     return unwrap(r, (b) => (b as Wrapped<{ conversations: Conversation[] }>).data.conversations);
   }
 
-  /** DM a user as the custom publisher. Text is clamped to 500 chars. */
+  /**
+   * DM a user as the custom publisher. Text is clamped to 500 chars. A 404
+   * could be the user or the publisher (the response doesn't say; unchecked
+   * live, #34), so it looks the user up: a user who still exists means the
+   * publisher is gone.
+   */
   async sendDirectMessage(userId: number, text: string): Promise<CtResult<null>> {
     const r = await this.#call("POST", `/chat/v1/conversations/privateMessage/${userId}`, {
       senderId: this.#publisherId,
       text: clamp(text),
     });
+    if (r.kind === "client_error" && r.status === 404) {
+      const user = await this.getUser(userId);
+      if (user.outcome === "ok" && user.data) this.gone.add("publisher");
+    }
     return unwrap(r, () => null);
   }
 
@@ -207,6 +231,7 @@ export class ConnecteamClient {
    * Create a published Quick Task. One user makes an individual task (two or
    * more would make one group task). Not idempotent: a repeat makes a second
    * task, so the caller stores the returned id before anything could repeat it.
+   * A 404 notes the board as gone (#34).
    */
   async createTask(boardId: string, task: QuickTask): Promise<CtResult<{ id: string }>> {
     const r = await this.#call("POST", `/tasks/v1/taskboards/${encodeURIComponent(boardId)}/tasks`, {
@@ -215,6 +240,8 @@ export class ConnecteamClient {
       title: task.title,
       description: { content: task.description },
     });
+    // No task id in the path: a 404 is the board (#34).
+    if (r.kind === "client_error" && r.status === 404) this.gone.add("board");
     return unwrap(r, (b) => {
       const id = (b as Wrapped<{ id: string }>).data.id;
       if (typeof id !== "string" || !id) throw new Error("no task id");

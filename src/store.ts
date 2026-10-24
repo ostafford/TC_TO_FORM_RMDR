@@ -4,7 +4,7 @@
  */
 import type { TimeActivity } from "./connecteam/types.js";
 import type { CreditCandidate } from "./crediting/choose.js";
-import type { SendKind } from "./messages/failureAlert.js";
+import type { AlertCondition, GoneSetting, SendKind } from "./messages/failureAlert.js";
 
 /**
  * open: no end yet, or on a manual break. grace: waiting for the Grace Period to end. submitted: a
@@ -107,7 +107,8 @@ export type { SendKind };
 
 /**
  * A send given up on (#33): it kept failing for about an hour (`failed`), or
- * its claim was stuck (`unconfirmed`: it may have gone out).
+ * its claim was stuck (`unconfirmed`: it may have gone out), or it was more
+ * than an hour overdue when a block lifted (`skipped`, #34).
  */
 export interface Undelivered {
   /** `<kind>:<shiftId>`: one per send and Shift. */
@@ -119,21 +120,49 @@ export interface Undelivered {
   name: string;
   shiftStart: number;
   shiftTz: string;
-  outcome: "failed" | "unconfirmed";
-  /** The last failure's HTTP status; `null` for a timeout or a stuck claim. */
+  outcome: "failed" | "unconfirmed" | "skipped";
+  /** The condition whose all clear lists it: `messages`, or the block it was skipped after. */
+  alert: AlertCondition;
+  /** The last failure's HTTP status; `null` for a timeout, a stuck claim or a skip. */
   status: number | null;
   failingSince: number;
   givenUpAt: number;
 }
 
-/** The Failure Alert conditions (#33). messages: sends given up on. sweep: the sweep's reads failing. */
-export type AlertCondition = "messages" | "sweep";
+/**
+ * What stops work until the client fixes it (#34): a rejected API key, or a
+ * Compliance Form, custom publisher or task board that's gone.
+ */
+export type Block = "key" | GoneSetting;
+
+export interface BlockRow {
+  block: Block;
+  since: number;
+  /** The setting's value when it was found gone; `null` for the key. */
+  setting: string | null;
+  checkedAt: number;
+}
+
+export type { AlertCondition };
 
 /**
- * Small values the sweep keeps (migrations/0008_sweep.sql), plus when its
- * reads started failing and the last failure's status (#33).
+ * Small values the Worker keeps (worker_state): the sweep's (#32), when its
+ * reads started failing and the last failure's status (#33), and the daily
+ * allowance left (#34).
  */
-export type SweepStateKey = "clocks_listed_at" | "day_limit" | "read_failing_since" | "read_failing_status";
+export type StateKey = "clocks_listed_at" | "day_limit" | "read_failing_since" | "read_failing_status" | "day_remaining";
+
+/** What the lost-webhook alert reads (#34). */
+export interface WebhookHealth {
+  /** When the last webhook delivery arrived, or `null` for never. */
+  lastDelivery: number | null;
+  /** Shift Segments the sweep found that no webhook told us of, in the window. */
+  missed: number;
+  /** Whether any Shift Segment started or ended in the window. */
+  activity: boolean;
+  /** When the first Shift was recorded: how long the Deployment has been watching. */
+  watchingSince: number | null;
+}
 
 /** A Shift first known more than this long after its recorded end is never checked. */
 export const BACKFILL_CUTOFF_SECONDS = 24 * 60 * 60;
@@ -600,19 +629,19 @@ export class WorkList {
 
   /**
    * Lease up to `limit` Reminder Tasks whose next step is due, oldest due
-   * first, as {@link takeDue} does for Shifts. A deleted Shift's task is
-   * taken too: deleting it is its step.
+   * first, as {@link takeDue} does for Shifts, leaving out creates or ticks
+   * held by a block (#34). A deleted Shift's task is taken too: deleting it is
+   * its step.
    */
-  async takeDueTasks(now: number, limit: number): Promise<ReminderTaskRow[]> {
+  async takeDueTasks(now: number, limit: number, take = { creates: true, ticks: true }): Promise<ReminderTaskRow[]> {
     const due = await this.db
       .prepare(
-        `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, t.tick,
-                t.attempts AS task_attempts, t.failing_since AS task_failing_since, s.*
-         FROM reminder_tasks t JOIN shifts s ON s.id = t.shift_id
-         WHERE t.due_at <= ? AND (t.lease_until IS NULL OR t.lease_until <= ?)
-         ORDER BY t.due_at LIMIT ?`,
+        `${TASK_SELECT}
+         WHERE t.due_at <= ?1 AND (t.lease_until IS NULL OR t.lease_until <= ?1)
+           AND (?3 OR t.task_id IS NOT NULL) AND (?4 OR t.tick IS NOT 'ticked')
+         ORDER BY t.due_at LIMIT ?2`,
       )
-      .bind(now, now, limit)
+      .bind(now, limit, take.creates ? 1 : 0, take.ticks ? 1 : 0)
       .all<Record<string, unknown>>();
 
     const taken: ReminderTaskRow[] = [];
@@ -621,24 +650,7 @@ export class WorkList {
         .prepare("UPDATE reminder_tasks SET lease_until = ? WHERE shift_id = ? AND (lease_until IS NULL OR lease_until <= ?)")
         .bind(now + LEASE_SECONDS, r.id, now)
         .run();
-      if (lease.meta.changes !== 1) continue;
-      taken.push({
-        shiftId: String(r.id),
-        boardId: String(r.board_id),
-        task:
-          r.task_id === null
-            ? null
-            : {
-                id: String(r.task_id),
-                title: String(r.title),
-                userIds: JSON.parse(String(r.user_ids)) as number[],
-                description: String(r.description ?? ""),
-              },
-        tick: (r.tick as ReminderTaskRow["tick"]) ?? null,
-        shift: { ...toShift(r), deleted: r.deleted_at !== null },
-        attempts: Number(r.task_attempts),
-        failingSince: r.task_failing_since === null ? null : Number(r.task_failing_since),
-      });
+      if (lease.meta.changes === 1) taken.push(toTask(r));
     }
     return taken;
   }
@@ -775,10 +787,15 @@ export class WorkList {
       .run();
   }
 
-  /** The sends given up on that no all clear has listed yet, oldest first (#33). */
-  async openUndelivered(): Promise<Undelivered[]> {
+  /** The sends given up on that the condition's all clear hasn't listed yet, oldest first (#33). */
+  async openUndelivered(alert: AlertCondition): Promise<Undelivered[]> {
     const rows = await this.db
-      .prepare("SELECT * FROM undelivered WHERE cleared_at IS NULL ORDER BY given_up_at, send_key")
+      // Given up together (a block lifting), each Shift's sends read in the order they'd have gone.
+      .prepare(
+        `SELECT * FROM undelivered WHERE alert = ? AND cleared_at IS NULL
+         ORDER BY given_up_at, shift_start, CASE kind WHEN 'reminder' THEN 0 WHEN 'task' THEN 1 WHEN 'tick' THEN 2 ELSE 3 END, send_key`,
+      )
+      .bind(alert)
       .all<Record<string, unknown>>();
     return rows.results.map((r) => ({
       sendKey: String(r.send_key),
@@ -788,6 +805,7 @@ export class WorkList {
       shiftStart: Number(r.shift_start),
       shiftTz: String(r.shift_tz),
       outcome: r.outcome as Undelivered["outcome"],
+      alert: r.alert as AlertCondition,
       status: r.status === null ? null : Number(r.status),
       failingSince: Number(r.failing_since),
       givenUpAt: Number(r.given_up_at),
@@ -801,7 +819,7 @@ export class WorkList {
   async sendsFailing(): Promise<boolean> {
     const r = await this.db
       .prepare(
-        `SELECT (SELECT MAX(given_up_at) FROM undelivered) AS gave_up,
+        `SELECT (SELECT MAX(given_up_at) FROM undelivered WHERE alert = 'messages') AS gave_up,
                 (SELECT MAX(done_at) FROM send_claims WHERE done_at IS NOT NULL) AS sent`,
       )
       .first<{ gave_up: number | null; sent: number | null }>();
@@ -834,7 +852,7 @@ export class WorkList {
       this.db.prepare("INSERT OR IGNORE INTO failure_alerts (condition, state) VALUES (?, 'clear')").bind(condition),
       this.db
         .prepare(
-          `UPDATE failure_alerts SET state = 'alerting', claimed_at = ?2
+          `UPDATE failure_alerts SET state = 'alerting', claimed_at = ?2, quiet = CASE WHEN state = 'clear' THEN 1 ELSE quiet END
            WHERE condition = ?1 AND state IN ('clear', 'raised') AND (alerted_at IS NULL OR alerted_at <= ?3)`,
         )
         .bind(condition, now, now - holdSeconds),
@@ -845,7 +863,7 @@ export class WorkList {
   /** The alert went out (`outcome === "ok"`): the condition is raised, and owes an all clear. */
   async alertPosted(condition: AlertCondition, now: number): Promise<void> {
     await this.db
-      .prepare("UPDATE failure_alerts SET state = 'raised', alerted_at = ? WHERE condition = ? AND state = 'alerting'")
+      .prepare("UPDATE failure_alerts SET state = 'raised', alerted_at = ?, quiet = 0 WHERE condition = ? AND state = 'alerting'")
       .bind(now, condition)
       .run();
   }
@@ -859,18 +877,26 @@ export class WorkList {
     await this.db.batch([
       this.db.prepare("INSERT OR IGNORE INTO failure_alerts (condition, state) VALUES (?, 'clear')").bind(condition),
       this.db
-        .prepare("UPDATE failure_alerts SET state = 'raised' WHERE condition = ? AND state IN ('clear', 'alerting')")
+        .prepare(
+          `UPDATE failure_alerts SET state = 'raised', quiet = CASE WHEN state = 'clear' THEN 1 ELSE quiet END
+           WHERE condition = ? AND state IN ('clear', 'alerting')`,
+        )
         .bind(condition),
     ]);
   }
 
-  /** Claim the condition's all clear, before posting it. `false` unless it's raised. */
-  async claimAllClear(condition: AlertCondition, now: number): Promise<boolean> {
+  /**
+   * Claim the condition's all clear, before posting it. `null` unless it's
+   * raised; `quiet` when its alert never reached the client (#34).
+   */
+  async claimAllClear(condition: AlertCondition, now: number): Promise<{ quiet: boolean } | null> {
     const r = await this.db
-      .prepare("UPDATE failure_alerts SET state = 'clearing', claimed_at = ? WHERE condition = ? AND state = 'raised'")
+      .prepare(
+        "UPDATE failure_alerts SET state = 'clearing', claimed_at = ? WHERE condition = ? AND state = 'raised' RETURNING quiet",
+      )
       .bind(now, condition)
-      .run();
-    return r.meta.changes === 1;
+      .first<{ quiet: number }>();
+    return r ? { quiet: r.quiet === 1 } : null;
   }
 
   /** The all clear went out (`outcome === "ok"`), listing these sends: they're cleared. */
@@ -925,14 +951,108 @@ export class WorkList {
       .run();
   }
 
-  async sweepState(key: SweepStateKey): Promise<number | null> {
-    const r = await this.db.prepare("SELECT value FROM sweep_state WHERE key = ?").bind(key).first<{ value: number }>();
+  /** The blocks in force (#34). */
+  async blocks(): Promise<BlockRow[]> {
+    const rows = await this.db
+      .prepare("SELECT block, since, setting, checked_at FROM blocks ORDER BY block")
+      .all<{ block: Block; since: number; setting: string | null; checked_at: number }>();
+    return rows.results.map((r) => ({ block: r.block, since: r.since, setting: r.setting, checkedAt: r.checked_at }));
+  }
+
+  /** Something stops work until the client fixes it (#34). A block already in force keeps its start. */
+  async block(block: Block, now: number, setting: string | null): Promise<void> {
+    await this.db
+      .prepare("INSERT OR IGNORE INTO blocks (block, since, setting, checked_at) VALUES (?, ?, ?, ?)")
+      .bind(block, now, setting, now)
+      .run();
+  }
+
+  /** The block was probed and is still in force. */
+  async blockChecked(block: Block, now: number): Promise<void> {
+    await this.db.prepare("UPDATE blocks SET checked_at = ? WHERE block = ?").bind(now, block).run();
+  }
+
+  /** Lift the block. `true` for the one caller that lifted it, so only one run skips what's overdue. */
+  async unblock(block: Block): Promise<boolean> {
+    const r = await this.db.prepare("DELETE FROM blocks WHERE block = ?").bind(block).run();
+    return r.meta.changes === 1;
+  }
+
+  /**
+   * The Shifts whose Reminder or Escalation was due at or before `cutoff`
+   * and hasn't gone out (#34), with when it was due.
+   */
+  async overdueShifts(cutoff: number): Promise<(ShiftRow & { dueAt: number })[]> {
+    const rows = await this.db
+      .prepare(
+        `SELECT * FROM shifts WHERE status IN ('grace', 'reminded') AND due_at <= ? AND deleted_at IS NULL
+         ORDER BY due_at`,
+      )
+      .bind(cutoff)
+      .all<Record<string, unknown>>();
+    return rows.results.map((r) => ({ ...toShift(r), dueAt: Number(r.due_at) }));
+  }
+
+  /**
+   * The Reminder Tasks whose create or tick DM was due at or before `cutoff`
+   * and hasn't gone out (#34).
+   */
+  async overdueTaskSends(cutoff: number): Promise<ReminderTaskRow[]> {
+    const rows = await this.db
+      .prepare(
+        `${TASK_SELECT}
+         WHERE t.due_at <= ? AND ((t.state = 'pending' AND t.task_id IS NULL) OR (t.state = 'open' AND t.tick = 'ticked'))
+         ORDER BY t.due_at`,
+      )
+      .bind(cutoff)
+      .all<Record<string, unknown>>();
+    return rows.results.map(toTask);
+  }
+
+  /**
+   * The task board `from` was gone, and `to` replaces it (#34): Reminder
+   * Tasks not yet created go there. Created ones stay where they are.
+   */
+  async moveUncreatedTasks(from: string, to: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE reminder_tasks SET board_id = ? WHERE board_id = ? AND task_id IS NULL AND state = 'pending'")
+      .bind(to, from)
+      .run();
+  }
+
+  /** Skip a send that was overdue when a block lifted (#34): recorded, never sent. */
+  async recordSkipped(u: Undelivered): Promise<void> {
+    await this.#undelivered(u).run();
+  }
+
+  /** What the lost-webhook alert reads, over the `windowSeconds` before `now` (#34). */
+  async webhookHealth(now: number, windowSeconds: number): Promise<WebhookHealth> {
+    const from = now - windowSeconds;
+    const r = await this.db
+      .prepare(
+        `SELECT (SELECT MAX(received_at) FROM webhook_deliveries) AS last_delivery,
+                (SELECT COUNT(*) FROM sweep_finds WHERE kind = 'segment' AND found_at > ?1) AS missed,
+                EXISTS (SELECT 1 FROM shift_segments WHERE start_at > ?1 OR end_at > ?1) AS activity,
+                (SELECT MIN(created_at) FROM shifts) AS watching_since`,
+      )
+      .bind(from)
+      .first<{ last_delivery: number | null; missed: number; activity: number; watching_since: number | null }>();
+    return {
+      lastDelivery: r?.last_delivery ?? null,
+      missed: r?.missed ?? 0,
+      activity: !!r?.activity,
+      watchingSince: r?.watching_since ?? null,
+    };
+  }
+
+  async state(key: StateKey): Promise<number | null> {
+    const r = await this.db.prepare("SELECT value FROM worker_state WHERE key = ?").bind(key).first<{ value: number }>();
     return r?.value ?? null;
   }
 
-  async setSweepState(key: SweepStateKey, value: number): Promise<void> {
+  async setState(key: StateKey, value: number): Promise<void> {
     await this.db
-      .prepare("INSERT INTO sweep_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+      .prepare("INSERT INTO worker_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
       .bind(key, value)
       .run();
   }
@@ -948,16 +1068,16 @@ export class WorkList {
    */
   async sweepReadFailed(now: number, status: number): Promise<void> {
     await this.db.batch([
-      this.db.prepare("INSERT OR IGNORE INTO sweep_state (key, value) VALUES ('read_failing_since', ?)").bind(now),
+      this.db.prepare("INSERT OR IGNORE INTO worker_state (key, value) VALUES ('read_failing_since', ?)").bind(now),
       this.db
-        .prepare("INSERT INTO sweep_state (key, value) VALUES ('read_failing_status', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+        .prepare("INSERT INTO worker_state (key, value) VALUES ('read_failing_status', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
         .bind(status),
     ]);
   }
 
   /** A sweep read worked: the reads aren't failing. */
   async sweepReadOk(): Promise<void> {
-    await this.db.prepare("DELETE FROM sweep_state WHERE key IN ('read_failing_since', 'read_failing_status')").run();
+    await this.db.prepare("DELETE FROM worker_state WHERE key IN ('read_failing_since', 'read_failing_status')").run();
   }
 
   async setSweepClocks(ids: number[], now: number): Promise<void> {
@@ -969,7 +1089,7 @@ export class WorkList {
       ...ids.map((id) => this.db.prepare("INSERT OR IGNORE INTO sweep_clocks (time_clock_id, next_at) VALUES (?, ?)").bind(id, now)),
       this.db
         .prepare(
-          "INSERT INTO sweep_state (key, value) VALUES ('clocks_listed_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+          "INSERT INTO worker_state (key, value) VALUES ('clocks_listed_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         )
         .bind(now),
     ]);
@@ -1014,10 +1134,10 @@ export class WorkList {
     return this.db
       .prepare(
         `INSERT OR IGNORE INTO undelivered
-           (send_key, kind, user_id, name, shift_start, shift_tz, outcome, status, failing_since, given_up_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (send_key, kind, user_id, name, shift_start, shift_tz, outcome, alert, status, failing_since, given_up_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(u.sendKey, u.kind, u.userId, u.name, u.shiftStart, u.shiftTz, u.outcome, u.status, u.failingSince, u.givenUpAt);
+      .bind(u.sendKey, u.kind, u.userId, u.name, u.shiftStart, u.shiftTz, u.outcome, u.alert, u.status, u.failingSince, u.givenUpAt);
   }
 
   #sendDone(claimKey: string, now: number): D1PreparedStatement {
@@ -1029,6 +1149,31 @@ export class WorkList {
       .prepare("INSERT OR IGNORE INTO webhook_deliveries (dedupe_key, event_type, user_id, received_at) VALUES (?, ?, ?, ?)")
       .bind(d.dedupeKey, d.eventType, d.userId, now);
   }
+}
+
+/** A Reminder Task with its Shift: `WHERE` and the rest follow. */
+const TASK_SELECT = `SELECT t.board_id, t.task_id, t.title, t.user_ids, t.description, t.tick,
+         t.attempts AS task_attempts, t.failing_since AS task_failing_since, s.*
+       FROM reminder_tasks t JOIN shifts s ON s.id = t.shift_id`;
+
+function toTask(r: Record<string, unknown>): ReminderTaskRow {
+  return {
+    shiftId: String(r.id),
+    boardId: String(r.board_id),
+    task:
+      r.task_id === null
+        ? null
+        : {
+            id: String(r.task_id),
+            title: String(r.title),
+            userIds: JSON.parse(String(r.user_ids)) as number[],
+            description: String(r.description ?? ""),
+          },
+    tick: (r.tick as ReminderTaskRow["tick"]) ?? null,
+    shift: { ...toShift(r), deleted: r.deleted_at !== null },
+    attempts: Number(r.task_attempts),
+    failingSince: r.task_failing_since === null ? null : Number(r.task_failing_since),
+  };
 }
 
 function toShift(r: Record<string, unknown>): ShiftRow {
