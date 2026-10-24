@@ -102,6 +102,8 @@ export function timeActivity(opts: {
   timezone?: string;
   requestId?: string;
   isAutoClockOut?: boolean;
+  /** Links the segment to its Scheduled Shift (#24). */
+  schedulerShiftId?: string;
 }) {
   const timezone = opts.timezone ?? "Australia/Sydney";
   return {
@@ -118,6 +120,7 @@ export function timeActivity(opts: {
       start: { timestamp: opts.start, timezone },
       ...(opts.end !== undefined ? { end: { timestamp: opts.end, timezone } } : {}),
       ...(opts.isAutoClockOut !== undefined ? { isAutoClockOut: opts.isAutoClockOut } : {}),
+      ...(opts.schedulerShiftId !== undefined ? { schedulerShiftId: opts.schedulerShiftId } : {}),
       jobId: "job-1",
       shiftAttachments: [],
     },

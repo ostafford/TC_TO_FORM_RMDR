@@ -1,8 +1,11 @@
 /**
  * One cron run's work (ADR-0002): lease the Shifts whose next step is due,
  * oldest first, and do that step:
+ *  - an open Shift with a Scheduled Shift: checked against its planned end,
+ *    and treated as ending then if still open (./scheduledEnd.ts, #24);
  *  - the end of the Grace Period: one `form-submissions` check, then the
- *    Reminder if nothing arrived;
+ *    Reminder if nothing arrived (the "still clocked in" or "break never
+ *    ended" one for a Shift treated as ended at its planned end);
  *  - the escalation point, the escalation delay after the Reminder: the check
  *    again, then an Escalation to each recipient if still nothing
  *    (./escalate.ts), or during Quiet Hours, held for the Escalation Summary
@@ -31,7 +34,8 @@
  */
 import type { ConnecteamClient } from "../connecteam/client.js";
 import type { Settings } from "../env.js";
-import { reminderShiftEnded } from "../messages/reminder.js";
+import type { SchedulerReads } from "../escalation/scheduledShift.js";
+import { reminderShiftEnded, reminderStillOpen } from "../messages/reminder.js";
 import type { RelaySender } from "../relay/send.js";
 import type { Block, ShiftRow, Undelivered, WorkList } from "../store.js";
 import { fullName, undelivered } from "./backoff.js";
@@ -40,6 +44,7 @@ import { escalationPoint } from "./escalate.js";
 import { runFailureAlerts, type AlertResult } from "./failureAlerts.js";
 import { runTaskSteps, type TaskStepResult } from "./reminderTask.js";
 import { checkSubmitted, retry, skip, type StepResult } from "./steps.js";
+import { scheduledEnd } from "./scheduledEnd.js";
 import { runSummaries } from "./summary.js";
 import { runSweep, type SweepResult } from "./sweep.js";
 
@@ -89,7 +94,10 @@ export async function runDueSteps(input: DueStepDeps): Promise<
     deferred: 0,
     held: 0,
     quiet: 0,
+    scheduled: 0,
   };
+  // The schedulers are listed once for every open Shift checked this run (#24).
+  const schedulerReads: SchedulerReads = {};
   // Escalations held overnight go first, once Quiet Hours are over (#29).
   const summary = held(deps, "shift") ? { summaries: 0 } : await runSummaries(deps);
   // Held Shifts aren't even taken: they'd sit at the head of the queue.
@@ -110,7 +118,9 @@ export async function runDueSteps(input: DueStepDeps): Promise<
         ? await endOfGracePeriod(shift, deps)
         : shift.status === "reminded"
           ? await escalationPoint(shift, deps)
-          : await skip(shift, deps);
+          : shift.status === "open"
+            ? await scheduledEnd(shift, deps, schedulerReads)
+            : await skip(shift, deps);
     counts[result]++;
   }
   // After the Shifts, so a task due from this run's Reminder is created alongside it.
@@ -177,14 +187,17 @@ async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<Ste
     return "skipped";
   }
 
-  const text = reminderShiftEnded({
+  const input = {
     firstName: user.data?.firstName ?? "",
     shift: { startSeconds: shift.startAt, endSeconds: shift.endAt, timeZone: shift.startTz },
     deploymentZone: settings.timeZone,
     formName: form.data.formName,
     whereToFind: settings.whereToFind,
     escalationDelayMinutes: settings.escalationDelayMinutes,
-  });
+  };
+  // Still open at its planned end (#24): the Reminder says whether they're still clocked in or on their break.
+  const state = shift.endedBySchedule ? await store.openState(shift.id) : "ended";
+  const text = state === "ended" ? reminderShiftEnded(input) : reminderStillOpen({ ...input, onBreak: state === "on_break" });
   const sent = await ct.sendDirectMessage(shift.userId, text);
   if (sent.outcome !== "ok") {
     await store.releaseSend(claimKey);
