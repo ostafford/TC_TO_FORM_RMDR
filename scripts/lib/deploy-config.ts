@@ -227,7 +227,8 @@ export function compareWithLive(
   };
 }
 
-function isTimeZone(zone: string): boolean {
+/** Whether `zone` is an IANA time zone name this runtime knows; the wizard checks typed zones with it too. */
+export function isTimeZone(zone: string): boolean {
   try {
     new Intl.DateTimeFormat("en-AU", { timeZone: zone });
     return true;
