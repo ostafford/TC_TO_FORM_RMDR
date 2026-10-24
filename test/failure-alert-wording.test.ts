@@ -1,10 +1,20 @@
 /**
- * The Failure Alerts' wording (#33): variant D, labelled lines, at most 500
+ * The Failure Alerts' wording (#33, #34): variant D, labelled lines, at most 500
  * characters, and every one ends with an `Action:` line however long the list.
  */
 import { describe, it, expect } from "vitest";
 import { MAX_MESSAGE } from "../src/messages/format.js";
-import { allClear, clockOutCheckFailing, failureCause, messagesNotSending, type MissedSend } from "../src/messages/failureAlert.js";
+import {
+  allClear,
+  allowanceUsed,
+  clockOutCheckFailing,
+  clockOutsNotArriving,
+  failureCause,
+  messagesNotSending,
+  paused,
+  settingGone,
+  type MissedSend,
+} from "../src/messages/failureAlert.js";
 
 // Tue 20 Oct 2026, 9:00 am in Sydney.
 const SHIFT = Date.UTC(2026, 9, 19, 22, 0) / 1000;
@@ -90,5 +100,38 @@ describe("the Cause line", () => {
     [{ outcome: "unconfirmed", status: null }, "the integration stopped mid-send"],
   ] as const)("%j reads %j", (f, cause) => {
     expect(failureCause(f)).toBe(cause);
+  });
+});
+
+describe("the #34 alerts", () => {
+  it.each([
+    ["Paused", paused()],
+    ["form gone", settingGone({ setting: "form", id: "9001" })],
+    ["publisher gone", settingGone({ setting: "publisher", id: "4242" })],
+    ["board gone", settingGone({ setting: "board", id: "W".repeat(300) })],
+    ["webhook missed", clockOutsNotArriving({ missed: 12 })],
+    ["webhook silent", clockOutsNotArriving({ silentHours: 30 })],
+    ["allowance", allowanceUsed()],
+  ])("%s: labelled lines, at most 500 characters, ending with an Action line", (_, text) => {
+    expect(text).toMatch(/^ALERT · [A-Z0-9% -]+\n\n/);
+    expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
+    expect(text).toMatch(/\n\nAction: .+$/);
+  });
+
+  it("names the setup step to rerun for each gone setting", () => {
+    expect(settingGone({ setting: "form", id: "9001" })).toMatch(/Action: rerun setup step "Compliance Form"\.$/);
+    expect(settingGone({ setting: "publisher", id: "1" })).toMatch(/Action: rerun setup step "Sender name"\.$/);
+    expect(settingGone({ setting: "board", id: "b" })).toMatch(/Action: rerun setup step "Reminder Task"\.$/);
+  });
+
+  it("an all clear after a block lists what was skipped, as the spec words it", () => {
+    expect(allClear({ recovered: "key", sends: [send("Jordan Lee", { outcome: "skipped" }), send("Sam Patel", { kind: "escalation", outcome: "skipped" })] })).toBe(
+      "ALL CLEAR\n\n" +
+        "Connecteam accepts the API key again.\n" +
+        "Skipped (over an hour late):\n" +
+        "- Reminder: Jordan Lee, Tue 20 Oct\n" +
+        "- Escalation: Sam Patel, Tue 20 Oct\n\n" +
+        "Action: follow these up by hand if needed.",
+    );
   });
 });

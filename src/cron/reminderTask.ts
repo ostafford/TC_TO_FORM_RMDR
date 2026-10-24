@@ -25,6 +25,7 @@ import { submittedFor } from "../crediting/check.js";
 import { reminderTaskDescription, reminderTaskTitle, tickDm } from "../messages/reminderTask.js";
 import { TASK_LIFETIME_SECONDS, type ReminderTaskRow, type Undelivered } from "../store.js";
 import { LONGEST_WAIT_SECONDS, fullName, retryWait, undelivered } from "./backoff.js";
+import { causedByBlock, held, pausedByKey } from "./blocks.js";
 import type { DueStepDeps } from "./dueSteps.js";
 
 /** The most Reminder Tasks one run takes. */
@@ -39,7 +40,8 @@ export type TaskStepResult =
   | "skipped"
   | "retry"
   | "given_up"
-  | "deferred";
+  | "deferred"
+  | "held";
 
 /** What a send gives up on once its waits are used up (#33), given the last failure's status. */
 type GiveUp = (status: number | null) => Promise<TaskStepResult>;
@@ -55,12 +57,23 @@ export async function runTaskSteps(deps: DueStepDeps): Promise<Record<TaskStepRe
     retry: 0,
     given_up: 0,
     deferred: 0,
+    held: 0,
   };
-  for (const task of await deps.store.takeDueTasks(deps.now, TASK_BATCH)) {
-    // Stopped for the minute (#31): hand it back for the next run.
-    if (deps.ct.minuteBudgetSpent()) {
+  // Steps held by a block (#34) aren't taken, so they can't crowd out the rest.
+  const take = { creates: !held(deps, "task_create"), ticks: !held(deps, "tick") };
+  const skipAll = deps.ct.stopped() || pausedByKey(deps);
+  for (const task of skipAll ? [] : await deps.store.takeDueTasks(deps.now, TASK_BATCH, take)) {
+    // Stopped for the minute (#31), or the key rejected (#34): hand it back for the next run.
+    if (deps.ct.stopped()) {
       await deps.store.releaseTask(task.shiftId);
       counts.deferred++;
+      continue;
+    }
+    // A block found mid-run.
+    const step = task.task === null ? "task_create" : task.tick === "ticked" ? "tick" : null;
+    if (step && held(deps, step)) {
+      await deps.store.releaseTask(task.shiftId);
+      counts.held++;
       continue;
     }
     const result = task.task === null ? await create(task, deps) : await openTask(task, task.task, deps);
@@ -256,6 +269,12 @@ async function retry(
   detail: Record<string, unknown> & { status?: number | null },
   giveUp: GiveUp | null,
 ): Promise<TaskStepResult> {
+  if (causedByBlock(deps, detail.status)) {
+    // It waits for the block to lift (./blocks.ts): no try used up.
+    (deps.log ?? (() => {}))({ evt: "step_held", shiftId: row.shiftId, ...detail });
+    await deps.store.releaseTask(row.shiftId);
+    return "held";
+  }
   const failures = row.attempts + 1;
   (deps.log ?? (() => {}))({ evt: "step_failed", shiftId: row.shiftId, failures, ...detail });
   const wait = retryWait(failures);

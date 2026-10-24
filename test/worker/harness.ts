@@ -13,19 +13,24 @@ export const ALERTS_CHANNEL = "alerts-1";
 
 export async function resetDb(): Promise<void> {
   await env.DB.batch(
-    ["send_claims", "reminder_tasks", "shift_segments", "shifts", "manual_breaks", "webhook_deliveries", "sweep_clocks", "sweep_state", "sweep_finds", "undelivered", "failure_alerts"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
+    ["send_claims", "reminder_tasks", "shift_segments", "shifts", "manual_breaks", "webhook_deliveries", "sweep_clocks", "worker_state", "sweep_finds", "undelivered", "failure_alerts", "blocks"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)),
   );
 }
 
 export function harness(settings: Partial<Record<string, string>> = {}) {
   const ct = new FakeConnecteam();
   // The test Deployment's settings (vitest.config.ts), with any overrides.
-  const workerEnv = { ...env, ...settings } as typeof env;
+  let workerEnv = { ...env, ...settings } as typeof env;
   let arrival = 0;
   const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 
   return {
     ct,
+
+    /** Change settings from now on, as rerunning a setup step and redeploying does. */
+    configure(more: Partial<Record<string, string>>) {
+      workerEnv = { ...workerEnv, ...more } as typeof env;
+    },
 
     /**
      * Deliver a webhook. It arrives `at` (Unix seconds); by default a few

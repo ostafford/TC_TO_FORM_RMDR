@@ -27,7 +27,7 @@ export const LONGEST_WAIT_SECONDS = Math.max(...BACKOFF_MINUTES) * 60;
 export function undelivered(
   shift: Pick<ShiftRow, "id" | "userId" | "startAt" | "startTz" | "failingSince">,
   kind: SendKind,
-  f: { name: string; outcome: Undelivered["outcome"]; status: number | null },
+  f: { name: string; outcome: Undelivered["outcome"]; status: number | null; alert?: Undelivered["alert"] },
   deps: { now: number },
 ): Undelivered {
   return {
@@ -38,6 +38,7 @@ export function undelivered(
     shiftStart: shift.startAt,
     shiftTz: shift.startTz,
     outcome: f.outcome,
+    alert: f.alert ?? "messages",
     status: f.status,
     failingSince: shift.failingSince ?? deps.now,
     givenUpAt: deps.now,

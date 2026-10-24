@@ -1,5 +1,5 @@
 /**
- * The Failure Alerts' wording (#33): variant D from the message-wording
+ * The Failure Alerts' wording (#33, #34): variant D from the message-wording
  * prototype (#11), fixed, not editable per Deployment. Posted to the Alerts
  * Channel only, never as DMs, and never held for Quiet Hours. Labelled lines
  * only, and every one ends with an `Action:` line, which is kept however long
@@ -10,9 +10,22 @@ import { MAX_MESSAGE, cap, formatDuration, formatShiftDay } from "./format.js";
 /** The sends a Failure Alert can list as not reached. */
 export type SendKind = "reminder" | "escalation" | "task" | "tick";
 
+/** A setting that can point at something gone (#34). */
+export type GoneSetting = "form" | "publisher" | "board";
+
+/**
+ * The Failure Alert conditions. messages: sends given up on (#33). sweep: the
+ * sweep's reads failing (#33). key: Connecteam rejected the API key, so work
+ * is paused (#34). form, publisher, board: that setting points at something
+ * gone (#34). webhook: clock-outs not arriving (#34). allowance: the daily API
+ * allowance more than 80% used (#34).
+ */
+export type AlertCondition = "messages" | "sweep" | "key" | GoneSetting | "webhook" | "allowance";
+
 /**
  * A send that didn't reach someone, as the alerts list it: `failed` (it kept
- * failing, so it was never sent) or `unconfirmed` (it may have gone out).
+ * failing, so it was never sent), `unconfirmed` (it may have gone out) or
+ * `skipped` (more than an hour overdue when work resumed, #34).
  */
 export interface MissedSend {
   kind: SendKind;
@@ -22,7 +35,7 @@ export interface MissedSend {
   name: string;
   shiftStart: number;
   shiftTz: string;
-  outcome: "failed" | "unconfirmed";
+  outcome: "failed" | "unconfirmed" | "skipped";
 }
 
 const KIND: Record<SendKind, { one: string; many: string; label: string }> = {
@@ -33,7 +46,7 @@ const KIND: Record<SendKind, { one: string; many: string; label: string }> = {
 };
 
 /** What the last failure says went wrong, for the `Cause:` line. */
-export function failureCause(f: { outcome: "failed" | "unconfirmed"; status: number | null }): string {
+export function failureCause(f: { outcome: MissedSend["outcome"]; status: number | null }): string {
   if (f.outcome === "unconfirmed") return "the integration stopped mid-send";
   if (f.status === 429) return "Connecteam's rate limit";
   if (f.status === null || f.status >= 500) return "Connecteam not responding";
@@ -78,13 +91,81 @@ export function clockOutCheckFailing(input: { sinceMinutes: number; cause: strin
   );
 }
 
+/** ALERT · PAUSED: Connecteam rejected the API key, so no work is done until it's replaced (#34). */
+export function paused(): string {
+  return (
+    `ALERT · PAUSED\n\n` +
+    `Cause: Connecteam rejected the API key\n` +
+    `Effect: no reminders or escalations\n\n` +
+    `Action: create a new API key (Settings → API keys), then rerun setup step "API key".`
+  );
+}
+
+const SETTING: Record<GoneSetting, { title: string; setting: string; step: string }> = {
+  form: { title: "FORM NOT FOUND", setting: "Compliance Form", step: "Compliance Form" },
+  publisher: { title: "SENDER NOT FOUND", setting: "Sender (custom publisher)", step: "Sender name" },
+  board: { title: "TASK BOARD NOT FOUND", setting: "Reminder Task board", step: "Reminder Task" },
+};
+
 /**
- * ALL CLEAR: the condition recovered. For sends, it lists every one given up
- * on since the last all clear, to follow up by hand.
+ * ALERT · FORM NOT FOUND, and the same shape for the publisher and the task
+ * board (#34): a setting points at something gone. Once gone, its name can't
+ * be read, so it's named by id.
  */
-export function allClear(input: { recovered: "messages" | "sweep"; sends: MissedSend[] }): string {
-  const what = input.recovered === "messages" ? "Messages are sending again." : "The clock-out check is working again.";
+export function settingGone(input: { setting: GoneSetting; id: string }): string {
+  const s = SETTING[input.setting];
+  return (
+    `ALERT · ${s.title}\n\n` +
+    `Setting: ${s.setting} (id ${cap(input.id, 40)})\n` +
+    `Cause: deleted or no longer available\n\n` +
+    `Action: rerun setup step "${s.step}".`
+  );
+}
+
+/**
+ * ALERT · CLOCK-OUTS NOT ARRIVING (#34): the sweep keeps finding Shifts the
+ * webhook missed, or no webhook has arrived for 24 hours while Shifts happened.
+ */
+export function clockOutsNotArriving(input: { missed: number } | { silentHours: number }): string {
+  const what = "missed" in input ? `Missed: ${input.missed} in the last 24 hours` : `Since: ${input.silentHours} hours`;
+  return (
+    `ALERT · CLOCK-OUTS NOT ARRIVING\n\n` +
+    `${what}\n` +
+    `Effect: reminders still sent, up to a few minutes late\n\n` +
+    `Action: rerun setup step "Webhook".`
+  );
+}
+
+/** ALERT · API ALLOWANCE 80% USED (#34). */
+export function allowanceUsed(): string {
+  return (
+    `ALERT · API ALLOWANCE 80% USED\n\n` +
+    `Shared with: every integration on this account\n` +
+    `If exhausted: reminders stop until tomorrow\n\n` +
+    `Action: none yet.`
+  );
+}
+
+const RECOVERED: Record<AlertCondition, string> = {
+  messages: "Messages are sending again.",
+  sweep: "The clock-out check is working again.",
+  key: "Connecteam accepts the API key again.",
+  form: "The Compliance Form setting works again.",
+  publisher: "The sender setting works again.",
+  board: "The Reminder Task board setting works again.",
+  webhook: "Clock-outs are arriving again.",
+  allowance: "The API allowance is under 80% used again.",
+};
+
+/**
+ * ALL CLEAR: the condition recovered. It lists every send given up on since
+ * the condition's last all clear, to follow up by hand: for `messages`, those
+ * not delivered; after a block, those skipped as more than an hour late.
+ */
+export function allClear(input: { recovered: AlertCondition; sends: MissedSend[] }): string {
+  const what = RECOVERED[input.recovered];
   if (input.sends.length === 0) return `ALL CLEAR\n\n${what}\n\nAction: none.`;
+  const label = input.recovered === "messages" ? "Not delivered:" : "Skipped (over an hour late):";
   return fit((names) => {
     const shown = input.sends.slice(0, names);
     const more = input.sends.length - shown.length;
@@ -94,7 +175,7 @@ export function allClear(input: { recovered: "messages" | "sweep"; sends: Missed
         (s.outcome === "unconfirmed" ? " (unconfirmed)" : ""),
     );
     if (more > 0) items.push(`- and ${more} more`);
-    return `ALL CLEAR\n\n${what}\nNot delivered:\n${items.join("\n")}\n\nAction: follow these up by hand if needed.`;
+    return `ALL CLEAR\n\n${what}\n${label}\n${items.join("\n")}\n\nAction: follow these up by hand if needed.`;
   });
 }
 

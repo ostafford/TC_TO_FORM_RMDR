@@ -57,12 +57,12 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
   const { store, ct, now } = deps;
   const log = deps.log ?? (() => {});
   const result: SweepResult = { swept: 0, found: 0, failed: 0, deferred: 0 };
-  if (ct.minuteBudgetSpent()) return result;
+  if (ct.stopped()) return result;
   // Whether any read worked this run, and the last failed one's status.
   let readOk = false;
   let lastFailure: number | null = null;
 
-  const listedAt = await store.sweepState("clocks_listed_at");
+  const listedAt = await store.state("clocks_listed_at");
   if (listedAt === null || now - listedAt >= CLOCK_LIST_SECONDS) {
     const clocks = await ct.listTimeClocks();
     if (clocks.outcome === "ok") {
@@ -79,11 +79,11 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
 
   const clocks = await store.sweepClockCount();
   if (clocks > 0) {
-    const every = sweepIntervalMinutes(clocks, (await store.sweepState("day_limit")) ?? DEFAULT_DAY_LIMIT);
+    const every = sweepIntervalMinutes(clocks, (await store.state("day_limit")) ?? DEFAULT_DAY_LIMIT);
     const today = dateIn(deps.settings.timeZone, now);
     const yesterday = dayBefore(today);
     for (const clock of await store.takeDueClocks(now, Math.ceil(clocks / every), now + every * 60)) {
-      if (ct.minuteBudgetSpent()) {
+      if (ct.stopped()) {
         await store.releaseClock(clock, now);
         result.deferred++;
         continue;
@@ -103,7 +103,7 @@ export async function runSweep(deps: DueStepDeps): Promise<SweepResult> {
   }
 
   const dayLimit = ct.lastRateLimit?.dayLimit;
-  if (dayLimit) await store.setSweepState("day_limit", dayLimit);
+  if (dayLimit) await store.setState("day_limit", dayLimit);
   if (readOk) await store.sweepReadOk();
   else if (result.failed > 0) await store.sweepReadFailed(now, lastFailure ?? 0);
   return result;

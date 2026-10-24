@@ -80,6 +80,8 @@ export class FakeConnecteam {
   readonly records: FakeRecord[] = [];
   /** Sent as `x-ratelimit-day-limit` on every answer when set. */
   dayLimit: number | null = null;
+  /** Sent as `x-ratelimit-day-remaining` on every answer when set. */
+  dayRemaining: number | null = null;
   /** Sent as `x-ratelimit-minute-limit` / `-minute-remaining` on every answer when set. */
   minute: { limit: number; remaining: number } | null = null;
   readonly #stalls: Array<{ method: string; pathPrefix: string; reached: () => void; gate: Promise<number> }> = [];
@@ -121,6 +123,12 @@ export class FakeConnecteam {
   /** Answer every call whose path starts with `pathPrefix` with this status until {@link recover}; `null` drops the connection. */
   failAll(method: string, pathPrefix: string, status: number | null): this {
     this.#outages.push({ method, pathPrefix, status });
+    return this;
+  }
+
+  /** Answer every call with 401, as Connecteam does once the API key is revoked, until {@link recover}. */
+  rejectKey(status = 401): this {
+    for (const method of ["GET", "POST", "PUT", "DELETE"]) this.failAll(method, "/", status);
     return this;
   }
 
@@ -178,6 +186,7 @@ export class FakeConnecteam {
     }
     const res = this.#answer(call);
     if (this.dayLimit !== null) res.headers.set("x-ratelimit-day-limit", String(this.dayLimit));
+    if (this.dayRemaining !== null) res.headers.set("x-ratelimit-day-remaining", String(this.dayRemaining));
     if (this.minute !== null) {
       res.headers.set("x-ratelimit-minute-limit", String(this.minute.limit));
       res.headers.set("x-ratelimit-minute-remaining", String(this.minute.remaining));
