@@ -29,6 +29,8 @@ export interface ShiftRow {
   attempts: number;
   /** When the first of those failures happened, or `null`. */
   failingSince: number | null;
+  /** Its Escalation is held for Quiet Hours, to go out in the Escalation Summary (#29). */
+  held: boolean;
 }
 
 /** A manual break, as the `time_activity` webhook sends it (#23), or as the sweep reads it (#32). */
@@ -429,12 +431,13 @@ export class WorkList {
   /**
    * Lease up to `limit` Shifts whose next step is due, oldest due first. A
    * Shift another run holds is skipped, so overlapping runs never work the
-   * same Shift, and so is a deleted one.
+   * same Shift, and so is a deleted one, and one held for Quiet Hours (its
+   * Escalation goes out in the Escalation Summary, {@link takeHeld}).
    */
   async takeDue(now: number, limit: number): Promise<ShiftRow[]> {
     const due = await this.db
       .prepare(
-        `SELECT * FROM shifts WHERE due_at <= ? AND deleted_at IS NULL AND (lease_until IS NULL OR lease_until <= ?)
+        `SELECT * FROM shifts WHERE due_at <= ? AND deleted_at IS NULL AND (lease_until IS NULL OR lease_until <= ?) AND held = 0
          ORDER BY due_at LIMIT ?`,
       )
       .bind(now, now, limit)
@@ -449,6 +452,40 @@ export class WorkList {
       if (lease.meta.changes === 1) taken.push(toShift(r));
     }
     return taken;
+  }
+
+  /**
+   * Lease up to `limit` Shifts whose Escalation was held for Quiet Hours, for
+   * the Escalation Summary (#29), oldest first. Quiet Hours are over when
+   * this is called, so each is taken whatever its due time, unless it's
+   * waiting out a backoff after a failed send.
+   */
+  async takeHeld(now: number, limit: number): Promise<ShiftRow[]> {
+    const due = await this.db
+      .prepare(
+        `SELECT * FROM shifts WHERE held = 1 AND status = 'reminded' AND deleted_at IS NULL
+           AND (due_at <= ?1 OR attempts = 0) AND (lease_until IS NULL OR lease_until <= ?1)
+         ORDER BY due_at LIMIT ?2`,
+      )
+      .bind(now, limit)
+      .all<Record<string, unknown>>();
+    const taken: ShiftRow[] = [];
+    for (const r of due.results) {
+      const lease = await this.db
+        .prepare("UPDATE shifts SET lease_until = ? WHERE id = ? AND (lease_until IS NULL OR lease_until <= ?)")
+        .bind(now + LEASE_SECONDS, r.id, now)
+        .run();
+      if (lease.meta.changes === 1) taken.push(toShift(r));
+    }
+    return taken;
+  }
+
+  /** Hold the Shift's Escalation for Quiet Hours, until `releaseAt` (#29). */
+  async hold(shiftId: string, releaseAt: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE shifts SET held = 1, due_at = ?, lease_until = NULL WHERE id = ? AND status = 'reminded'")
+      .bind(releaseAt, shiftId)
+      .run();
   }
 
   /** Let the next run try this Shift again. */
@@ -499,7 +536,7 @@ export class WorkList {
       this.db
         .prepare(
           `UPDATE shifts SET status = 'submitted', due_at = NULL, lease_until = NULL, credited_submission_id = ?1,
-             attempts = 0, failing_since = NULL
+             attempts = 0, failing_since = NULL, held = 0
            WHERE id = ?2 AND status IN (${NEEDS_FORM}) AND deleted_at IS NULL AND credited_submission_id IS NULL
              AND NOT EXISTS (SELECT 1 FROM shifts WHERE credited_submission_id = ?1)`,
         )
@@ -619,7 +656,7 @@ export class WorkList {
       ...(undelivered ? [this.#undelivered(undelivered)] : []),
       this.db
         .prepare(
-          `UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL, attempts = 0, failing_since = NULL
+          `UPDATE shifts SET status = 'escalated', due_at = NULL, lease_until = NULL, attempts = 0, failing_since = NULL, held = 0
            WHERE id = ? AND status = 'reminded'`,
         )
         .bind(shiftId),
@@ -1246,5 +1283,6 @@ function toShift(r: Record<string, unknown>): ShiftRow {
     remindedAt: r.reminded_at === null || r.reminded_at === undefined ? null : Number(r.reminded_at),
     attempts: Number(r.attempts ?? 0),
     failingSince: r.failing_since === null || r.failing_since === undefined ? null : Number(r.failing_since),
+    held: Number(r.held ?? 0) === 1,
   };
 }

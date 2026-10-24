@@ -4,7 +4,9 @@
  *  - the end of the Grace Period: one `form-submissions` check, then the
  *    Reminder if nothing arrived;
  *  - the escalation point, the escalation delay after the Reminder: the check
- *    again, then an Escalation to each recipient if still nothing;
+ *    again, then an Escalation to each recipient if still nothing
+ *    (./escalate.ts), or during Quiet Hours, held for the Escalation Summary
+ *    that goes first in the first run after they end (./summary.ts, #29);
  * then each Reminder Task step that is due (./reminderTask.ts), then the
  * polling sweep (./sweep.ts). Before them, blocks that are fixed are lifted
  * (./blocks.ts, #34), then Failure Alerts go (./failureAlerts.ts): they
@@ -28,18 +30,20 @@
  * minute picks it up.
  */
 import type { ConnecteamClient } from "../connecteam/client.js";
-import { submittedFor } from "../crediting/check.js";
 import type { Settings } from "../env.js";
-import { escalationRecipients } from "../escalation/recipients.js";
-import { escalation } from "../messages/escalation.js";
 import { reminderShiftEnded } from "../messages/reminder.js";
 import type { RelaySender } from "../relay/send.js";
 import type { Block, ShiftRow, Undelivered, WorkList } from "../store.js";
-import { fullName, retryWait, undelivered } from "./backoff.js";
-import { causedByBlock, held, liftBlocks, pausedByKey, recordBlocks } from "./blocks.js";
+import { fullName, undelivered } from "./backoff.js";
+import { held, liftBlocks, pausedByKey, recordBlocks } from "./blocks.js";
+import { escalationPoint } from "./escalate.js";
 import { runFailureAlerts, type AlertResult } from "./failureAlerts.js";
 import { runTaskSteps, type TaskStepResult } from "./reminderTask.js";
+import { checkSubmitted, retry, skip, type StepResult } from "./steps.js";
+import { runSummaries } from "./summary.js";
 import { runSweep, type SweepResult } from "./sweep.js";
+
+export type { StepResult };
 
 export interface DueStepDeps {
   store: WorkList;
@@ -60,10 +64,9 @@ export const CHECK_IN_SECONDS = 24 * 60 * 60;
 /** The most Shifts one run takes. */
 const BATCH = 25;
 
-export type StepResult = "submitted" | "reminded" | "escalated" | "retry" | "given_up" | "skipped" | "deferred" | "held";
-
 export async function runDueSteps(input: DueStepDeps): Promise<
   Record<StepResult, number> & {
+    summary: Awaited<ReturnType<typeof runSummaries>>;
     checkedIn: boolean;
     blocks: Block[];
     alerts: AlertResult;
@@ -85,7 +88,10 @@ export async function runDueSteps(input: DueStepDeps): Promise<
     skipped: 0,
     deferred: 0,
     held: 0,
+    quiet: 0,
   };
+  // Escalations held overnight go first, once Quiet Hours are over (#29).
+  const summary = held(deps, "shift") ? { summaries: 0 } : await runSummaries(deps);
   // Held Shifts aren't even taken: they'd sit at the head of the queue.
   for (const shift of held(deps, "shift") ? [] : await deps.store.takeDue(deps.now, BATCH)) {
     if (deps.ct.stopped()) {
@@ -116,7 +122,7 @@ export async function runDueSteps(input: DueStepDeps): Promise<
   const blocks = await recordBlocks(deps);
   const dayRemaining = deps.ct.lastRateLimit?.dayRemaining;
   if (dayRemaining != null) await deps.store.setState("day_remaining", dayRemaining);
-  return { ...counts, checkedIn, blocks, alerts, tasks, sweep, paused };
+  return { ...counts, summary, checkedIn, blocks, alerts, tasks, sweep, paused };
 }
 
 /** The daily check-in with the Integrator Relay (#36), claimed so overlapping runs send one. */
@@ -127,31 +133,6 @@ async function checkIn(deps: DueStepDeps): Promise<boolean> {
   if (await deps.relay({ kind: "check_in" })) return true;
   await deps.store.releaseCheckIn(claim.previous);
   return false;
-}
-
-async function skip(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
-  await deps.store.release(shift.id);
-  return "skipped";
-}
-
-/** What a step gives up on once its waits are used up (#33), given the last failure's status. */
-type GiveUp = (status: number | null) => Promise<StepResult>;
-
-/**
- * Did they submit between the Shift's first clock-in and `toSeconds`
- * (../crediting/check.ts)? Returns a result to stop with, or `null` when
- * nothing counts for this Shift.
- */
-async function checkSubmitted(
-  shift: ShiftRow,
-  toSeconds: number,
-  step: string,
-  deps: DueStepDeps,
-  giveUp: GiveUp,
-): Promise<StepResult | null> {
-  const found = await submittedFor(shift, toSeconds, deps);
-  if (found.outcome !== "ok") return retry(shift, deps, { step, ...found }, giveUp);
-  return found.data ? "submitted" : null;
 }
 
 async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
@@ -211,111 +192,4 @@ async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<Ste
   }
   await store.markReminded(shift.id, claimKey, now, escalateAt, settings.reminderTask);
   return "reminded";
-}
-
-/**
- * The escalation point. Recipients are read live, so a newly promoted Admin is
- * included and an Excluded Admins change takes effect on the next send. Each
- * recipient's send is claimed on its own: a failure retries only the
- * recipients still owed, after the next wait, and nobody gets it twice. Once
- * given up on, or with a recipient's claim stuck, the Escalation is listed in
- * a Failure Alert by the employee it's about.
- */
-async function escalationPoint(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {
-  const { store, ct, settings, now } = deps;
-  const log = deps.log ?? (() => {});
-  if (shift.endAt === null) return skip(shift, deps);
-
-  let name = "";
-  const missed = (outcome: Undelivered["outcome"], status: number | null) =>
-    undelivered(shift, "escalation", { name, outcome, status }, deps);
-  const giveUp: GiveUp = async (status) => {
-    await store.markEscalated(shift.id, now, missed("failed", status));
-    log({ evt: "send_given_up", shiftId: shift.id, kind: "escalation", outcome: "failed", status });
-    return "given_up";
-  };
-
-  const submitted = await checkSubmitted(shift, now, "escalation_check", deps, giveUp);
-  if (submitted) return submitted;
-
-  const users = await ct.listActiveUsers();
-  if (users.outcome !== "ok") return retry(shift, deps, { step: "users", ...users }, giveUp);
-  let employee = users.data.find((u) => u.userId === shift.userId) ?? null;
-  if (!employee) {
-    // Archived since the Shift: not in the active list.
-    const one = await ct.getUser(shift.userId);
-    if (one.outcome !== "ok") return retry(shift, deps, { step: "user", ...one }, giveUp);
-    employee = one.data ?? { userId: shift.userId, customFields: [] };
-  }
-  name = fullName(employee);
-  const form = await ct.getForm(settings.complianceFormId);
-  if (form.outcome !== "ok") return retry(shift, deps, { step: "form", ...form }, giveUp);
-
-  const recipients = escalationRecipients({ users: users.data, employee, excludedAdminIds: settings.excludedAdminIds });
-  if (recipients.length === 0) log({ evt: "escalation_no_recipients", shiftId: shift.id });
-
-  const text = escalation({
-    fullName: name,
-    userId: shift.userId,
-    shift: { startSeconds: shift.startAt, endSeconds: shift.endAt, timeZone: shift.startTz },
-    deploymentZone: settings.timeZone,
-    formName: form.data.formName,
-    remindedMinutesAgo: shift.remindedAt === null ? null : Math.floor((now - shift.remindedAt) / 60),
-    ticked: await store.taskTicked(shift.id),
-  });
-
-  let failed: { status: number | null } | null = null;
-  let owed = 0;
-  let busy = 0;
-  let stuck = 0;
-  for (const recipient of recipients) {
-    const claimKey = `escalation:${shift.id}:${recipient}`;
-    if (!(await store.claimSend(claimKey, shift.id, now))) {
-      // Done: already sent. Stuck: a run died mid-send, so never retried. Otherwise another run is mid-send.
-      const state = await store.sendState(claimKey, now);
-      if (state === "stuck") stuck++;
-      else if (state !== "done") busy++;
-      continue;
-    }
-    const sent = await ct.sendDirectMessage(recipient, text);
-    if (sent.outcome !== "ok") {
-      await store.releaseSend(claimKey);
-      log({ evt: "step_failed", shiftId: shift.id, step: "escalation", recipient, ...sent });
-      failed = sent;
-      owed++;
-      continue;
-    }
-    await store.markSendDone(claimKey, now);
-  }
-
-  if (failed) return retry(shift, deps, { step: "escalation", owed, status: failed.status }, giveUp);
-  if (busy > 0) return skip(shift, deps);
-  await store.markEscalated(shift.id, now, stuck > 0 ? missed("unconfirmed", null) : null);
-  if (stuck > 0) log({ evt: "send_given_up", shiftId: shift.id, kind: "escalation", outcome: "unconfirmed", stuck });
-  return "escalated";
-}
-
-/**
- * The step failed: try it again after the next wait (./backoff.ts), or once
- * the waits are used up, give up on it. A failure caused by a block only
- * waits for it to lift.
- */
-async function retry(
-  shift: ShiftRow,
-  deps: DueStepDeps,
-  detail: Record<string, unknown> & { status?: number | null },
-  giveUp: GiveUp,
-): Promise<StepResult> {
-  if (causedByBlock(deps, detail.status)) {
-    // It waits for the block to lift (./blocks.ts): no try used up.
-    (deps.log ?? (() => {}))({ evt: "step_held", shiftId: shift.id, ...detail });
-    await deps.store.release(shift.id);
-    return "held";
-  }
-  const failures = shift.attempts + 1;
-  (deps.log ?? (() => {}))({ evt: "step_failed", shiftId: shift.id, failures, ...detail });
-  const wait = retryWait(failures);
-  if (wait === null) return giveUp(detail.status ?? null);
-  await deps.store.backOff(shift.id, shift.status, deps.now, wait);
-  return "retry";
 }
