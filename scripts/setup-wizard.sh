@@ -922,10 +922,12 @@ s_relay() {
 s_tip() {
   stage "Tip: a clock-out question in Connecteam (optional)"
   why "Connecteam can ask staff a required question before they clock out, such as" \
-      "\"Have you submitted the compliance form?\". It's only their word, so this" \
-      "reminder still checks for the real form, but it's a useful nudge at the" \
-      "right moment."
-  todo "If you'd like one: in Connecteam, open Time Clock > Settings > Shift Entries, and add a required question under \"During shift or before clocking out\"."
+      "\"Have you submitted the compliance form?\". It helps staff who forget: it" \
+      "reminds them while they're still on site. It does nothing about staff who" \
+      "answer Yes without submitting. The reminder never reads the answer, and" \
+      "catches those either way, because it checks for the real form."
+  todo "Optional. Skip it if your problem is staff answering Yes without submitting, not forgetting." \
+       "If you'd like one: in Connecteam, open Time Clock > Settings > Shift Entries, and add a required question under \"During shift or before clocking out\"."
   example "\"Have you submitted the ${FORM_NAME:-compliance form}?\" with the answers Yes and No."
   note "Nothing to enter here."
   pause "Press Enter to continue"
