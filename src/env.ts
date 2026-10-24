@@ -4,6 +4,7 @@
  * (the tracked wrangler.jsonc stays a blank template).
  */
 import type { CreditRules } from "./crediting/choose.js";
+import { parseClock, type QuietHours } from "./escalation/quietHours.js";
 import type { RelaySettings } from "./relay/send.js";
 
 export interface Env {
@@ -28,6 +29,10 @@ export interface Env {
   REMINDER_TASK_ENABLED?: string;
   /** Needed when REMINDER_TASK_ENABLED is "true". */
   TASK_BOARD_ID?: string;
+  /** "true" or "false"; blank reads as off. FROM and UNTIL ("21:00") are needed when it's "true" (#29). */
+  QUIET_HOURS_ENABLED?: string;
+  QUIET_HOURS_FROM?: string;
+  QUIET_HOURS_UNTIL?: string;
   /** The chat channel Failure Alerts are posted to (#33). */
   ALERTS_CHANNEL_ID: string;
   /** Optional, all three or none: the Integrator Relay (#36). */
@@ -52,6 +57,8 @@ export interface Settings {
   shiftDateQuestionId: string;
   /** Where new Reminder Tasks go, or `null` when the Reminder Task is off. */
   reminderTask: { boardId: string } | null;
+  /** When Escalations wait, in the Deployment's time zone, or `null` when Quiet Hours are off (#29). */
+  quietHours: QuietHours | null;
   /** The Alerts Channel's conversation id. */
   alertsChannelId: string;
   /**
@@ -99,7 +106,18 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     reminderTask: null,
     alertsChannelId: text("ALERTS_CHANNEL_ID"),
     relay: null,
+    quietHours: null,
   };
+  const quietSwitch = String(env.QUIET_HOURS_ENABLED ?? "").trim();
+  if (quietSwitch && quietSwitch !== "true" && quietSwitch !== "false") problems.push("QUIET_HOURS_ENABLED");
+  if (quietSwitch === "true") {
+    const clock = (name: "QUIET_HOURS_FROM" | "QUIET_HOURS_UNTIL") => {
+      const m = parseClock(String(env[name] ?? ""));
+      if (m === null) problems.push(name);
+      return m ?? 0;
+    };
+    settings.quietHours = { from: clock("QUIET_HOURS_FROM"), until: clock("QUIET_HOURS_UNTIL") };
+  }
   const relay = {
     url: String(env.INTEGRATOR_RELAY_URL ?? "").trim(),
     clientSlug: String(env.INTEGRATOR_CLIENT_SLUG ?? "").trim(),
