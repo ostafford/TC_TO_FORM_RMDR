@@ -9,9 +9,16 @@
  *   forms             the account's forms, in order:   FORM ID <tab> LABEL
  *   form ID           one form: `name <tab> NAME`, then `warning <tab> TEXT`
  *                     and `date <tab> QUESTION ID <tab> TITLE` lines
+ *   people            `admin <tab> USER ID <tab> LABEL` per Admin, then one
+ *                     `direct <tab> LINE` saying whether direct managers are used
+ *   boards            live task boards:                BOARD ID <tab> NAME
+ *   publishers        custom publishers:               PUBLISHER ID <tab> NAME
+ *   channels          chats (not private ones):        CONVERSATION ID <tab> LABEL
+ *   create-channel TITLE USER,ID,...   a new channel with those members: its id
  *
  * Checking what the person typed (prints the value as saved, or the problem):
  *   zone TEXT | duration grace|delay TEXT | clock TEXT | where TEXT
+ *   relay-url TEXT | slug TEXT | automated NAME (exit 1 when it doesn't sound automated)
  *
  * The worked examples (#18), one line each:
  *   grace-example GRACE | delay-timeline GRACE DELAY
@@ -37,6 +44,16 @@ import {
   quietExample,
 } from "./lib/wizard-values.js";
 import { formatDuration } from "../src/messages/format.js";
+import type { ConnecteamUser, Conversation } from "../src/connecteam/types.js";
+import {
+  adminRows,
+  checkClientSlug,
+  checkRelayUrl,
+  conversationLabels,
+  directManagerLine,
+  directManagers,
+  soundsAutomated,
+} from "./lib/wizard-people.js";
 
 class Stop extends Error {
   constructor(
@@ -47,23 +64,45 @@ class Stop extends Error {
   }
 }
 
-const FORMS_PAGE = 300; // the most `GET /forms/v1/forms` returns at once
+// The most one page returns: `GET /forms/v1/forms`, `/users/v1/users`, and
+// `/publishers/v1/publishers` and `/chat/v1/conversations`.
+const FORMS_PAGE = 300;
+const USERS_PAGE = 500;
+const SMALL_PAGE = 100;
 
-async function get(path: string): Promise<unknown> {
+async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<Response> {
   const key = (process.env.CT_API_KEY ?? "").trim();
   if (!key) throw new Stop(4, "No API key saved yet. Run the key step first: npm run setup -- --step key");
   const base = (process.env.CT_API_BASE ?? "https://api.connecteam.com").replace(/\/+$/, "");
-  let res: Response;
   try {
-    res = await fetch(`${base}${path}`, { headers: { "X-API-KEY": key, accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+    return await fetch(`${base}${path}`, {
+      method,
+      headers: { "X-API-KEY": key, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(15_000),
+    });
   } catch (err) {
     throw new Stop(4, `Couldn't reach Connecteam (${err instanceof Error ? err.message : String(err)}).`);
   }
+}
+
+async function get(path: string): Promise<unknown> {
+  const res = await call("GET", path);
   if (res.status === 401 || res.status === 403) {
     throw new Stop(3, "Connecteam didn't accept the API key. Rerun the key step: npm run setup -- --step key");
   }
   if (!res.ok) throw new Stop(4, `Connecteam answered HTTP ${res.status} for ${path.split("?")[0]}.`);
   return res.json();
+}
+
+/** Every row of a paged list, `limit` at a time, stopping on a short page (`paging.offset` comes back even on the last one). */
+async function allPages<T>(path: string, limit: number, rows: (body: unknown) => T[] | undefined): Promise<T[]> {
+  const all: T[] = [];
+  for (let offset = 0; ; offset += limit) {
+    const page = rows(await get(`${path}${path.includes("?") ? "&" : "?"}limit=${limit}&offset=${offset}`)) ?? [];
+    all.push(...page);
+    if (page.length < limit) return all;
+  }
 }
 
 async function timeZones(): Promise<string[]> {
@@ -80,14 +119,7 @@ async function timeZones(): Promise<string[]> {
 }
 
 async function forms(): Promise<string[]> {
-  const all: ApiForm[] = [];
-  // `paging.offset` comes back even on the last page (tested live 2026-10-24), so stop on a short page.
-  for (let offset = 0; ; offset += FORMS_PAGE) {
-    const body = (await get(`/forms/v1/forms?limit=${FORMS_PAGE}&offset=${offset}`)) as { data?: { forms?: ApiForm[] } };
-    const page = body.data?.forms ?? [];
-    all.push(...page);
-    if (page.length < FORMS_PAGE) break;
-  }
+  const all = await allPages("/forms/v1/forms", FORMS_PAGE, (b) => (b as { data?: { forms?: ApiForm[] } }).data?.forms);
   if (all.length === 0) throw new Stop(4, "This account has no forms yet. Create the Compliance Form in Connecteam (Forms), then rerun: npm run setup -- --step form");
   const labels = formLabels(all);
   return all.map((f, i) => `${f.formId}\t${labels[i]}`);
@@ -101,6 +133,49 @@ async function form(id: string): Promise<string[]> {
     ...formWarnings(f).map((w) => `warning\t${w}`),
     ...dateQuestions(f).map((q) => `date\t${q.questionId}\t${q.title}`),
   ];
+}
+
+async function people(): Promise<string[]> {
+  const users = await allPages("/users/v1/users", USERS_PAGE, (b) => (b as { data?: { users?: ConnecteamUser[] } }).data?.users);
+  const admins = adminRows(users);
+  if (admins.length === 0) throw new Stop(4, "Couldn't find any admins in this account's users.");
+  return [...admins.map((a) => `admin\t${a.userId}\t${a.label}`), `direct\t${directManagerLine(directManagers(users))}`];
+}
+
+async function boards(): Promise<string[]> {
+  const body = (await get("/tasks/v1/taskboards")) as { data?: { taskBoards?: { id: number; name: string; isArchived?: boolean }[] } };
+  return (body.data?.taskBoards ?? []).filter((b) => !b.isArchived).map((b) => `${b.id}\t${plainText(b.name)}`);
+}
+
+async function publishers(): Promise<string[]> {
+  const rows = await allPages("/publishers/v1/publishers", SMALL_PAGE, (b) => (b as { data?: { publishers?: { id: number; name: string }[] } }).data?.publishers);
+  return rows.map((p) => `${p.id}\t${plainText(p.name)}`);
+}
+
+async function channels(): Promise<string[]> {
+  const rows = await allPages("/chat/v1/conversations", SMALL_PAGE, (b) => (b as { data?: { conversations?: Conversation[] } }).data?.conversations);
+  const labels = conversationLabels(rows);
+  return rows.map((c, i) => `${c.id}\t${labels[i]}`);
+}
+
+/**
+ * A new channel for Failure Alerts: only Admins post in a channel, and the
+ * members are the ones given (#15). Per the docs, not tested live: creating
+ * one needs an owner's API key, so a refusal says to create it in the app.
+ */
+async function createChannel(title: string, ids: string): Promise<string[]> {
+  const t = plainText(title);
+  if (!t) throw new Stop(1, "Give the channel a name.");
+  const members = ids.split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (members.length === 0) throw new Stop(1, "The channel needs at least one member.");
+  const res = await call("POST", "/chat/v1/conversations", { title: t, type: "channel", assignedUserIds: members });
+  if (res.status === 401 || res.status === 403) {
+    throw new Stop(4, "Connecteam wouldn't create the channel: that needs an API key made by the account owner. Create the channel in Connecteam (Chat > New channel) instead, then rerun this step and pick it.");
+  }
+  if (!res.ok) throw new Stop(4, `Connecteam answered HTTP ${res.status} when creating the channel.`);
+  const id = ((await res.json()) as { data?: { conversation?: { id?: unknown } } }).data?.conversation?.id;
+  if (typeof id !== "string" || !id) throw new Stop(4, "Connecteam created the channel but didn't say its id. Rerun this step and pick it from the list.");
+  return [id];
 }
 
 function minutesArg(v: string | undefined): number {
@@ -148,6 +223,29 @@ async function main(args: string[]): Promise<string[]> {
       return forms();
     case "form":
       return form(rest[0] ?? "");
+    case "people":
+      return people();
+    case "boards":
+      return boards();
+    case "publishers":
+      return publishers();
+    case "channels":
+      return channels();
+    case "create-channel":
+      return createChannel(rest[0] ?? "", rest[1] ?? "");
+    case "relay-url": {
+      const u = checkRelayUrl(rest[0] ?? "");
+      if (!u.ok) throw new Stop(1, u.problem);
+      return [u.value];
+    }
+    case "slug": {
+      const s = checkClientSlug(rest[0] ?? "");
+      if (!s.ok) throw new Stop(1, s.problem);
+      return [s.value];
+    }
+    case "automated":
+      if (!soundsAutomated(rest[0] ?? "")) throw new Stop(1, "no");
+      return ["yes"];
     case "zone":
       return zone(rest[0] ?? "");
     case "duration":
