@@ -1,8 +1,11 @@
 # Runbook: Clock-out Form Reminder
 
 How to deploy, update and tear down one **Deployment**. Terms follow
-`GLOSSARY.md`. The setup wizard will do the deploy steps for you (#37 to #41);
-this page is the manual equivalent and the reference for what the wizard does.
+`GLOSSARY.md`. The setup wizard (`npm run setup`, `npm run setup -- --step
+NAME` to rerun one step) does these steps for you; this page is the manual
+equivalent and the reference for what the wizard does. So far the wizard
+covers the Cloudflare account and the Connecteam API key (#37); the rest
+arrives with #38 to #41.
 
 ## Deploying
 
