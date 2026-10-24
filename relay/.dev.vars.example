@@ -1,0 +1,4 @@
+# Copy to relay/.dev.vars for `npm run relay:dev`. NEVER commit .dev.vars.
+RELAY_SECRET=
+GITHUB_TOKEN=
+# GITHUB_REPO and EMAIL_WEBHOOK_URL are in relay/wrangler.jsonc `vars`, not here.

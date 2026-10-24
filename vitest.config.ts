@@ -3,13 +3,15 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-worker
 import { defineConfig } from "vitest/config";
 
 /**
- * Three projects, as in EH_Webhook:
+ * Four projects: three as in EH_Webhook, plus the relay's:
  *  - "node":        pure logic (message wording, time formatting). No runtime.
  *  - "worker":      the Worker as a black box inside workerd, real local D1
  *                   with migrations applied, a fake Connecteam behind the client.
  *  - "integration": live checks against a real Connecteam account. NOT run by
  *                   `npm test`; `npm run test:integration` self-skips without
  *                   the values it needs in .dev.vars.
+ *  - "relay":       the Integrator Relay (relay/, #35) inside workerd with its
+ *                   own config and Durable Object; GitHub is faked.
  */
 export default defineConfig(async () => {
   const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
@@ -60,6 +62,18 @@ export default defineConfig(async () => {
             name: "worker",
             include: ["test/worker/**/*.test.ts"],
             setupFiles: ["./test/worker/apply-migrations.ts"],
+          },
+        },
+        {
+          plugins: [
+            cloudflareTest({
+              wrangler: { configPath: "./relay/wrangler.jsonc" },
+              miniflare: { bindings: { RELAY_SECRET: "shhh", GITHUB_TOKEN: "ghp_x" } },
+            }),
+          ],
+          test: {
+            name: "relay",
+            include: ["relay/test/**/*.test.ts"],
           },
         },
       ],

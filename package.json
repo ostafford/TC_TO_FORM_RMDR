@@ -5,14 +5,18 @@
   "type": "module",
   "description": "Reminds Connecteam staff who clock out without submitting the Compliance Form, then escalates",
   "scripts": {
-    "test": "vitest run --project node --project worker",
+    "test": "vitest run --project node --project worker --project relay",
     "test:watch": "vitest",
     "test:integration": "vitest run --project integration",
     "test:all": "vitest run",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.worker.json && tsc -p relay/tsconfig.json",
     "deploy": "tsx scripts/deploy-config.ts --check-live && wrangler deploy --config wrangler.deploy.json",
     "deploy:config": "tsx scripts/deploy-config.ts",
-    "db:migrate": "tsx scripts/deploy-config.ts --check-live && wrangler d1 migrations apply clock-out-form-reminder --remote --config wrangler.deploy.json"
+    "db:migrate": "tsx scripts/deploy-config.ts --check-live && wrangler d1 migrations apply clock-out-form-reminder --remote --config wrangler.deploy.json",
+    "relay:deploy": "wrangler deploy --config relay/wrangler.jsonc",
+    "relay:dev": "wrangler dev --config relay/wrangler.jsonc",
+    "relay:secret": "wrangler secret put --config relay/wrangler.jsonc",
+    "relay:teardown": "wrangler delete --config relay/wrangler.jsonc"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
