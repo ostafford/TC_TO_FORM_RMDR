@@ -63,8 +63,6 @@ export function messagesNotSending(input: {
   sinceMinutes: number;
   cause: string;
   sends: MissedSend[];
-  /** Counts only, no names: for the Integrator Relay, whose issues are on a public repo (#36). */
-  anonymous?: boolean;
 }): string {
   const head = `ALERT · MESSAGES NOT SENDING\n\nSince: ${formatDuration(input.sinceMinutes)} ago\nCause: ${input.cause}\n`;
   const action = `\n\nAction: none yet. An all-clear follows when it recovers.`;
@@ -83,7 +81,7 @@ export function messagesNotSending(input: {
       })
       .filter((l) => l !== null)
       .join("\n");
-  return input.anonymous ? head + lines(0) + action : fit((names) => head + lines(names) + action);
+  return fit((names) => head + lines(names) + action);
 }
 
 /** ALERT · CLOCK-OUT CHECK FAILING: the polling sweep's reads have failed for about an hour (#32). */
@@ -171,19 +169,10 @@ const RECOVERED: Record<AlertCondition, string> = {
 export function allClear(input: {
   recovered: AlertCondition;
   sends: MissedSend[];
-  /** Counts only, no names: for the Integrator Relay (#36). */
-  anonymous?: boolean;
 }): string {
   const what = RECOVERED[input.recovered];
   if (input.sends.length === 0) return `ALL CLEAR\n\n${what}\n\nAction: none.`;
   const label = input.recovered === "messages" ? "Not delivered:" : "Skipped (over an hour late):";
-  if (input.anonymous) {
-    const counts = (Object.keys(KIND) as SendKind[]).flatMap((kind) => {
-      const n = input.sends.filter((s) => s.kind === kind).length;
-      return n === 0 ? [] : [`${n} ${n === 1 ? KIND[kind].one : KIND[kind].many}`];
-    });
-    return `ALL CLEAR\n\n${what}\n${label} ${counts.join(", ")}, named in the Alerts Channel\n\nAction: follow these up by hand if needed.`;
-  }
   return fit((names) => {
     const shown = input.sends.slice(0, names);
     const more = input.sends.length - shown.length;

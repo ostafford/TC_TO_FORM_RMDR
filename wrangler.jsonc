@@ -3,10 +3,6 @@
   "name": "clock-out-form-reminder",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-15",
-  // A Deployment hosted on the integrator's own account calls the Integrator
-  // Relay's *.workers.dev URL on that same account; without this, plain
-  // fetch() to it gets a 404 (playbook: "Same-zone fetch() 404", #36).
-  "compatibility_flags": ["global_fetch_strictly_public"],
   "observability": { "enabled": true },
 
   // TEMPLATE: leave every value below blank here. Each Deployment's own values
@@ -16,7 +12,7 @@
   // database_id is a placeholder on purpose, so a raw `wrangler deploy` fails
   // before it can blank a live Worker's settings.
   // Secrets are set with `wrangler secret put ... --config wrangler.deploy.json`:
-  // CT_API_KEY, CT_WEBHOOK_SECRET, and INTEGRATOR_RELAY_SECRET with the relay.
+  // CT_API_KEY and CT_WEBHOOK_SECRET.
   "vars": {
     // The Compliance Form's id (GET /forms/v1/forms).
     "COMPLIANCE_FORM_ID": "",
@@ -28,10 +24,8 @@
     "GRACE_PERIOD_MINUTES": "",
     // Minutes after the Reminder before the Escalation.
     "ESCALATION_DELAY_MINUTES": "",
-    // "true" or "false"; FROM and UNTIL are 24-hour times like "21:00".
+    // "true" or "false": hold Escalations from 9 pm to 7 am.
     "QUIET_HOURS_ENABLED": "",
-    "QUIET_HOURS_FROM": "",
-    "QUIET_HOURS_UNTIL": "",
     // The Deployment's IANA time zone, e.g. "Australia/Sydney".
     "TIME_ZONE": "",
     // Optional: Admins' user ids, comma-separated, who don't get Escalations.
@@ -43,10 +37,7 @@
     "CT_PUBLISHER_ID": "",
     "CT_PUBLISHER_NAME": "",
     // The chat channel Failure Alerts go to.
-    "ALERTS_CHANNEL_ID": "",
-    // Optional: the Integrator Relay. A URL needs a client slug too.
-    "INTEGRATOR_RELAY_URL": "",
-    "INTEGRATOR_CLIENT_SLUG": ""
+    "ALERTS_CHANNEL_ID": ""
   },
 
   "d1_databases": [

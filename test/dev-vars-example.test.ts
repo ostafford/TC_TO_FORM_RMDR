@@ -19,7 +19,7 @@ describe(".dev.vars.example", () => {
 
   it("holds no real secret", () => {
     const values = parseDevVars(example);
-    for (const key of ["CT_API_KEY", "CT_WEBHOOK_SECRET", "INTEGRATOR_RELAY_SECRET", "D1_DATABASE_ID"]) {
+    for (const key of ["CT_API_KEY", "CT_WEBHOOK_SECRET", "D1_DATABASE_ID"]) {
       expect(values[key]).toBe("");
     }
   });

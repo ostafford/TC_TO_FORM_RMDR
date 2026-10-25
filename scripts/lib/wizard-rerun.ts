@@ -107,14 +107,14 @@ export function impactLines(keys: string[], before: Record<string, string>, afte
     if (!c || c.scheduled === 0) lines.push(rest);
     else lines.push(`${shifts(c.scheduled)} waiting for a reminder or escalation already scheduled. Those keep their times. ${rest}`);
   }
-  if (changed(keys, "QUIET_HOURS_ENABLED", "QUIET_HOURS_FROM", "QUIET_HOURS_UNTIL", "TIME_ZONE")) {
+  if (changed(keys, "QUIET_HOURS_ENABLED", "TIME_ZONE")) {
     const off = after.QUIET_HOURS_ENABLED === "false";
     const held = c?.held ?? 0;
     if (held > 0) {
       const them = `${count(held, "escalation is", "escalations are")} held for quiet hours. ${held === 1 ? "It goes" : "They go"} out`;
-      lines.push(off ? `${them} at the next check.` : `${them} when the new quiet hours end, or at the next check if it isn't quiet then.`);
-    } else if (changed(keys, "QUIET_HOURS_ENABLED", "QUIET_HOURS_FROM", "QUIET_HOURS_UNTIL")) {
-      lines.push(off ? "Escalations from now on go out at any hour." : "Escalations from now on follow the new quiet hours.");
+      lines.push(off ? `${them} at the next check.` : `${them} at 7:00 am by the new time zone's clock.`);
+    } else if (changed(keys, "QUIET_HOURS_ENABLED")) {
+      lines.push(off ? "Escalations from now on go out at any hour." : "Escalations from now on wait overnight, 9:00 pm to 7:00 am.");
     }
   }
   if (changed(keys, "EXCLUDED_ADMIN_IDS")) {
@@ -141,13 +141,6 @@ export function impactLines(keys: string[], before: Record<string, string>, afte
     const open = c?.alertsOpen ?? 0;
     if (open > 0) lines.push(`${count(open, "problem is", "problems are")} being reported now. Updates on ${open === 1 ? "it" : "them"} go to the new chat.`);
     else lines.push("Problems from now on are posted in the new chat.");
-  }
-  if (changed(keys, "INTEGRATOR_RELAY_URL", "INTEGRATOR_CLIENT_SLUG", "INTEGRATOR_RELAY_SECRET")) {
-    const was = !!before.INTEGRATOR_RELAY_URL?.trim();
-    const now = !!after.INTEGRATOR_RELAY_URL?.trim();
-    if (!now) lines.push("Problems are no longer sent to your integrator, and the daily \"still running\" check stops.");
-    else if (!was) lines.push("Problems are also sent to your integrator from now on, plus a daily \"still running\" check.");
-    else lines.push("Problems and the daily check go to your integrator with the new details.");
   }
   return lines;
 }

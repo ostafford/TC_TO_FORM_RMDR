@@ -22,12 +22,10 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
   // The test Deployment's settings (vitest.config.ts), with any overrides.
   let workerEnv = { ...env, ...settings } as typeof env;
   let arrival = 0;
-  const relay = new FakeRelay();
-  const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival, relayFetch: relay.fetch });
+  const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 
   return {
     ct,
-    relay,
 
     /** Change settings from now on, as rerunning a setup step and redeploying does. */
     configure(more: Partial<Record<string, string>>) {
@@ -63,31 +61,6 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
       await waitOnExecutionContext(ctx);
     },
   };
-}
-
-/**
- * A fake Integrator Relay (#36): records each push with the URL and secret it
- * came with, and answers 202, or `status` while set (`null`: no answer).
- */
-export class FakeRelay {
-  readonly pushes: { url: string; secret: string | null; body: Record<string, unknown> }[] = [];
-  status: number | null = 202;
-
-  readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const headers = new Headers(init?.headers);
-    this.pushes.push({ url: String(input), secret: headers.get("x-relay-secret"), body: JSON.parse(String(init?.body)) });
-    if (this.status === null) throw new TypeError("Network connection lost.");
-    return new Response(JSON.stringify({ ok: this.status < 300 }), { status: this.status });
-  }) as typeof fetch;
-
-  /** The alert pushes, as `[condition, state]`. */
-  alerts(): [unknown, unknown][] {
-    return this.pushes.filter((p) => p.body.kind === "alert").map((p) => [p.body.condition, p.body.state]);
-  }
-
-  checkIns(): number {
-    return this.pushes.filter((p) => p.body.kind === "check_in").length;
-  }
 }
 
 let requests = 0;

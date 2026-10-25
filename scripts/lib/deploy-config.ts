@@ -25,7 +25,7 @@ export const DATABASE_ID_KEY = "D1_DATABASE_ID";
 /** The template's stand-in for the database id: not a UUID, so a raw deploy fails before it changes anything. */
 export const DATABASE_ID_PLACEHOLDER = "set-D1_DATABASE_ID-in-.dev.vars";
 
-type Format = "number" | "minutes" | "switch" | "clock" | "zone" | "numberList" | "url" | "text";
+type Format = "number" | "minutes" | "switch" | "zone" | "numberList" | "text";
 
 interface SettingSpec {
   /** `var` goes into the config; `secret` is set with `wrangler secret put` and never copied. */
@@ -50,8 +50,6 @@ export const SETTINGS = {
   GRACE_PERIOD_MINUTES: { kind: "var", required: true, format: "minutes" },
   ESCALATION_DELAY_MINUTES: { kind: "var", required: true, format: "minutes" },
   QUIET_HOURS_ENABLED: { kind: "var", required: true, format: "switch" },
-  QUIET_HOURS_FROM: { kind: "var", required: isOn("QUIET_HOURS_ENABLED"), format: "clock" },
-  QUIET_HOURS_UNTIL: { kind: "var", required: isOn("QUIET_HOURS_ENABLED"), format: "clock" },
   TIME_ZONE: { kind: "var", required: true, format: "zone" },
   EXCLUDED_ADMIN_IDS: { kind: "var", required: false, format: "numberList" },
   REMINDER_TASK_ENABLED: { kind: "var", required: true, format: "switch" },
@@ -59,9 +57,6 @@ export const SETTINGS = {
   CT_PUBLISHER_ID: { kind: "var", required: true, format: "number" },
   CT_PUBLISHER_NAME: { kind: "var", required: true, format: "text" },
   ALERTS_CHANNEL_ID: { kind: "var", required: true, format: "text" },
-  INTEGRATOR_RELAY_URL: { kind: "var", required: false, format: "url" },
-  INTEGRATOR_CLIENT_SLUG: { kind: "var", required: (v) => !!v.INTEGRATOR_RELAY_URL?.trim(), format: "text" },
-  INTEGRATOR_RELAY_SECRET: { kind: "secret", required: false, format: "text" },
 } satisfies Record<string, SettingSpec>;
 
 export type SettingKey = keyof typeof SETTINGS;
@@ -81,10 +76,8 @@ const FORMAT_PROBLEM: Record<Format, { ok: (v: string) => boolean; says: string 
   number: { ok: (v) => /^[1-9]\d*$/.test(v), says: "must be a number (an id from Connecteam)" },
   minutes: { ok: (v) => /^[1-9]\d*$/.test(v), says: "must be a whole number of minutes, 1 or more" },
   switch: { ok: (v) => v === "true" || v === "false", says: 'must be "true" or "false"' },
-  clock: { ok: (v) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v), says: 'must be a 24-hour time like "21:00"' },
   zone: { ok: isTimeZone, says: 'must be a time zone name like "Australia/Sydney"' },
   numberList: { ok: (v) => /^[1-9]\d*(\s*,\s*[1-9]\d*)*$/.test(v), says: "must be user ids separated by commas" },
-  url: { ok: isHttpsUrl, says: "must be an https:// address" },
   text: { ok: () => true, says: "" },
 };
 
@@ -232,14 +225,6 @@ export function isTimeZone(zone: string): boolean {
   try {
     new Intl.DateTimeFormat("en-AU", { timeZone: zone });
     return true;
-  } catch {
-    return false;
-  }
-}
-
-function isHttpsUrl(v: string): boolean {
-  try {
-    return new URL(v).protocol === "https:";
   } catch {
     return false;
   }

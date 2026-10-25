@@ -244,8 +244,7 @@ describe("the setup wizard's entry points", () => {
     const r = await run(["--help"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("--step NAME");
-    expect(r.out).toContain("Steps: key timezone form timings quiet-hours recipients reminder-task sender alerts support webhook test");
-    expect(r.out).toContain("--support");
+    expect(r.out).toContain("Steps: key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test");
   });
 
   it("refuses an unknown step before asking anything", async () => {
@@ -254,14 +253,10 @@ describe("the setup wizard's entry points", () => {
     expect(unknown.out).toContain("unknown step: nope");
   });
 
-  it("asks for the support link only with --support, or when one is saved (17 stages, else 18)", async () => {
-    // Both stop at the Cloudflare question (no input), after the banner.
-    const plain = await run([], "", tempEnv());
-    expect(plain.out).toContain("17 stages");
-    const asked = await run(["--support"], "", tempEnv());
-    expect(asked.out).toContain("18 stages");
-    const kept = await run([], "", envWithKey("INTEGRATOR_RELAY_URL='https://relay.example.workers.dev'\n"));
-    expect(kept.out).toContain("18 stages");
+  it("a full setup is 17 stages", async () => {
+    // It stops at the Cloudflare question (no input), after the banner.
+    const r = await run([], "", tempEnv());
+    expect(r.out).toContain("17 stages");
   });
 });
 
@@ -455,25 +450,17 @@ describe("steps 7 and 8, the Grace Period and escalation delay (--step timings)"
 });
 
 describe("step 9, Quiet Hours (--step quiet-hours)", { timeout: SLOW }, () => {
-  it("defaults to on, 9 pm to 7 am, shown with the 10 pm example", async () => {
+  it("defaults to on, always 9 pm to 7 am, shown with the 10 pm example", async () => {
     const env = tempEnv();
-    const r = await run(["--step", "quiet-hours"], "\n\n\n", env);
+    const r = await run(["--step", "quiet-hours"], "\n", env);
     expect(r.code).toBe(0);
     expect(r.out).toContain("A shift ends at 10:00 pm.");
     expect(r.out).toContain("10:30 pm   reminder to the employee (sent: reminders are never held)");
     expect(r.out).toContain(" 2:30 am   (next day) escalation due → held until 7:00 am, then sent in the morning summary");
-    expect(saved(env)).toMatchObject({ QUIET_HOURS_ENABLED: "true", QUIET_HOURS_FROM: "21:00", QUIET_HOURS_UNTIL: "07:00" });
+    expect(saved(env)).toEqual({ QUIET_HOURS_ENABLED: "true" });
   });
 
-  it("can be changed, in 12- or 24-hour times, refusing the same start and end", async () => {
-    const env = tempEnv();
-    const r = await run(["--step", "quiet-hours"], "y\n7am\n07:00\n10 pm\n6:30am\n", env);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain("Quiet hours can't start and end at the same time.");
-    expect(saved(env)).toMatchObject({ QUIET_HOURS_ENABLED: "true", QUIET_HOURS_FROM: "22:00", QUIET_HOURS_UNTIL: "06:30" });
-  });
-
-  it("can be turned off", async () => {
+  it("one answer turns them off", async () => {
     const env = tempEnv();
     const r = await run(["--step", "quiet-hours"], "n\n", env);
     expect(r.code).toBe(0);
@@ -484,7 +471,7 @@ describe("step 9, Quiet Hours (--step quiet-hours)", { timeout: SLOW }, () => {
   it("the example uses the saved timings", async () => {
     const env = tempEnv();
     writeFileSync(env, "GRACE_PERIOD_MINUTES='15'\nESCALATION_DELAY_MINUTES='60'\n");
-    const r = await run(["--step", "quiet-hours"], "\n\n\n", env);
+    const r = await run(["--step", "quiet-hours"], "\n", env);
     expect(r.code).toBe(0);
     expect(r.out).toContain("10:15 pm   reminder to the employee");
     expect(r.out).toContain("11:15 pm   escalation due → held until 7:00 am");
@@ -588,14 +575,12 @@ describe("step 12, the sender name (--step sender)", { timeout: SLOW }, () => {
 });
 
 describe("step 13, the Alerts Channel (--step alerts)", { timeout: SLOW }, () => {
-  it("lists channels first, finds a chat by part of its name past Connecteam's first page, and doesn't ask about a support link", async () => {
+  it("lists channels first, and finds a chat by part of its name past Connecteam's first page", async () => {
     const env = envWithKey();
     const r = await run(["--step", "alerts"], "manag\n", env);
     expect(r.code).toBe(0);
     expect(r.out.indexOf("• Managers (channel)")).toBeLessThan(r.out.indexOf("• Team 1 (team chat)"));
-    expect(r.out).not.toContain("Support link (optional)");
     expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-12");
-    expect(saved(env).INTEGRATOR_RELAY_URL).toBeUndefined();
   });
 
   it("with many chats, shows only the channels and narrows the rest by name", async () => {
@@ -643,29 +628,6 @@ describe("step 13, the Alerts Channel (--step alerts)", { timeout: SLOW }, () =>
 
 });
 
-describe("step 14, the support link (--step support)", { timeout: SLOW }, () => {
-  it("takes the link, a public-safe name and the secret, never showing the secret", async () => {
-    const env = envWithKey();
-    const r = await run(["--step", "support"], "y\nhttp://relay.example\nhttps://relay.example.workers.dev/\nAcme Cleaning!\nAcme-Cleaning\nrelay-secret-123\n", env);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain(`"http://relay.example" isn't an https:// address.`);
-    expect(r.out).toContain("Use letters, numbers and dashes only");
-    expect(r.out).not.toContain("relay-secret-123");
-    expect(saved(env)).toMatchObject({
-      INTEGRATOR_RELAY_URL: "https://relay.example.workers.dev",
-      INTEGRATOR_CLIENT_SLUG: "acme-cleaning",
-      INTEGRATOR_RELAY_SECRET: "relay-secret-123",
-    });
-  });
-
-  it("a y by mistake: Enter at the link, with nothing typed, saves no support link", async () => {
-    const env = envWithKey();
-    const r = await run(["--step", "support"], "y\n\n", env);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain("Saved: no support link.");
-    expect(saved(env)).toMatchObject({ INTEGRATOR_RELAY_URL: "", INTEGRATOR_CLIENT_SLUG: "", INTEGRATOR_RELAY_SECRET: "" });
-  });
-});
 
 /**
  * A stand-in for wrangler: databases kept in a state file, every call and
@@ -715,11 +677,11 @@ const FIRST_RUN = [
   "", // time zone
   "1", "", "", // form, date question, where
   "", "", // grace, delay
-  "", "", "", // quiet hours on, from, until
+  "", // quiet hours on
   "", // recipients
   "", "1", // reminder task on, board
   "2480518", // publisher
-  "Managers", // alerts channel (no support link asked)
+  "Managers", // alerts channel
   "", // tip
   "y", // summary
   "", "y", "y", // test: the owner, send, arrived
@@ -740,7 +702,6 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     const r = await run([], FIRST_RUN, env, cf.env);
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain("Stage 17/17 · Test message");
-    expect(r.out).not.toContain("Support link (optional)");
     const v = saved(env);
     const url = "https://clock-out-form-reminder.test.workers.dev/webhook";
 
@@ -761,7 +722,6 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     expect(calls.indexOf("wrangler deploy --config")).toBeLessThan(calls.indexOf("wrangler secret put CT_API_KEY"));
     expect(calls).toContain("secret CT_API_KEY=ct-key-full");
     expect(calls).toContain(`secret CT_WEBHOOK_SECRET=${v.CT_WEBHOOK_SECRET}`);
-    expect(calls).not.toContain("INTEGRATOR_RELAY_SECRET");
     const built = JSON.parse(readFileSync(cf.env.WIZARD_DEPLOY_CONFIG!, "utf8"));
     expect(built.d1_databases[0].database_id).toBe(v.D1_DATABASE_ID);
     expect(built.vars.COMPLIANCE_FORM_ID).toBe("501");
@@ -901,8 +861,7 @@ describe("step 18's picker, with more than one owner", { timeout: SLOW }, () => 
 const RUNNING = [
   "CT_API_KEY='ct-key-saved'", "D1_DATABASE_ID='11111111-2222-3333-4444-555555555555'", "CT_WEBHOOK_SECRET='hook-secret-abc'",
   "TIME_ZONE='Australia/Melbourne'", "COMPLIANCE_FORM_ID='501'", "SHIFT_DATE_QUESTION_ID='q-shift'", "WHERE_TO_FIND='the red folder'",
-  "GRACE_PERIOD_MINUTES='30'", "ESCALATION_DELAY_MINUTES='240'", "QUIET_HOURS_ENABLED='true'", "QUIET_HOURS_FROM='21:00'",
-  "QUIET_HOURS_UNTIL='07:00'", "EXCLUDED_ADMIN_IDS=''", "REMINDER_TASK_ENABLED='true'", "TASK_BOARD_ID='701'",
+  "GRACE_PERIOD_MINUTES='30'", "ESCALATION_DELAY_MINUTES='240'", "QUIET_HOURS_ENABLED='true'", "EXCLUDED_ADMIN_IDS=''", "REMINDER_TASK_ENABLED='true'", "TASK_BOARD_ID='701'",
   "CT_PUBLISHER_ID='2480518'", "CT_PUBLISHER_NAME='Compliance Reminders (Automated)'", "ALERTS_CHANNEL_ID='chat-12'",
 ].join("\n") + "\n";
 const running = () => {
@@ -970,7 +929,7 @@ describe("rerunning a step on a running Deployment (--step, #41)", { timeout: SL
 
   it("nothing changed: nothing to apply, and Cloudflare isn't touched", async () => {
     const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
-    const r = await run(["--step", "quiet-hours"], "\n\n\n", running(), cf.env);
+    const r = await run(["--step", "quiet-hours"], "\n", running(), cf.env);
     expect(r.code, r.out).toBe(0);
     expect(r.out).toContain("Nothing changed, so there's nothing to apply.");
     expect(cf.log()).toBe("");
@@ -990,15 +949,6 @@ describe("rerunning a step on a running Deployment (--step, #41)", { timeout: SL
     rmSync(cf.dir, { recursive: true });
   });
 
-  it("--step support adds the link on a running Deployment and stores its secret", async () => {
-    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
-    const r = await run(["--step", "support"], "y\nhttps://relay.example.workers.dev\nacme\nrelay-secret-9\ny\n", running(), cf.env);
-    expect(r.code, r.out).toBe(0);
-    expect(r.out).toContain("Problems are also sent to your integrator from now on");
-    expect(cf.log()).toContain("secret INTEGRATOR_RELAY_SECRET=relay-secret-9");
-    expect(JSON.parse(readFileSync(cf.env.WIZARD_DEPLOY_CONFIG!, "utf8")).vars.INTEGRATOR_RELAY_URL).toBe("https://relay.example.workers.dev");
-    rmSync(cf.dir, { recursive: true });
-  });
 
   it("before the reminder is turned on, a rerun only saves", async () => {
     const cf = fakeWrangler();

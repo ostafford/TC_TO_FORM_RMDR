@@ -34,13 +34,13 @@
  *                     publisher: the message, then exit 0 sent, 4 not sent
  *
  * Checking what the person typed (prints the value as saved, or the problem):
- *   zone TEXT | duration grace|delay TEXT | clock TEXT | where TEXT
- *   relay-url TEXT | slug TEXT | automated NAME (exit 1 when it doesn't sound automated)
+ *   zone TEXT | duration grace|delay TEXT | where TEXT
+ *   automated NAME (exit 1 when it doesn't sound automated)
  *
  * The worked examples (#18), one line each:
  *   grace-example GRACE | delay-timeline GRACE DELAY
- *   quiet-example GRACE DELAY [FROM UNTIL]      (minutes; "HH:MM"; none is off)
- *   clock-label HH:MM | duration-label MINUTES
+ *   quiet-example GRACE DELAY on|off      (minutes)
+ *   duration-label MINUTES
  *   impact-sql        the D1 query `impact` reads the counts of
  *
  * Exit: 0 done, 1 what was typed won't do (the reason is printed), 3 the key
@@ -53,13 +53,12 @@ import { dateQuestions, formLabels, formWarnings, plainText, zoneOfSettings, typ
 import {
   MAX_DELAY_MINUTES,
   MAX_GRACE_MINUTES,
-  clockLabel,
   delayTimeline,
   graceExample,
   normaliseWhere,
-  parseClockInput,
   parseDuration,
   quietExample,
+  QUIET_HOURS_LABEL,
 } from "./lib/wizard-values.js";
 import { formatDuration } from "../src/messages/format.js";
 import type { ConnecteamUser, Conversation } from "../src/connecteam/types.js";
@@ -71,8 +70,6 @@ import { reminderShiftEnded } from "../src/messages/reminder.js";
 import { fullName } from "./lib/wizard-people.js";
 import {
   adminRows,
-  checkClientSlug,
-  checkRelayUrl,
   conversationLabels,
   directManagerLine,
   directManagers,
@@ -243,7 +240,7 @@ async function summary(): Promise<string[]> {
   const unticked = admins.filter((a) => excluded.has(a.userId)).map((a) => a.label);
   const board = v.TASK_BOARD_ID ? (await boards()).find((l) => l.startsWith(`${v.TASK_BOARD_ID}\t`))?.split("\t")[1] : undefined;
   const chat = (await channels()).find((l) => l.startsWith(`${v.ALERTS_CHANNEL_ID}\t`))?.split("\t")[1];
-  const quiet = v.QUIET_HOURS_ENABLED === "true" ? `${clockLabel(v.QUIET_HOURS_FROM!)} to ${clockLabel(v.QUIET_HOURS_UNTIL!)}` : "off";
+  const quiet = v.QUIET_HOURS_ENABLED === "true" ? QUIET_HOURS_LABEL : "off";
   return [
     summaryRow("Time zone", v.TIME_ZONE!),
     summaryRow("Compliance Form", plainText(f.formName)),
@@ -259,7 +256,6 @@ async function summary(): Promise<string[]> {
     summaryRow("Reminder task", v.REMINDER_TASK_ENABLED === "true" ? `on, board "${board ?? v.TASK_BOARD_ID}"` : "off"),
     summaryRow("Sender", v.CT_PUBLISHER_NAME!),
     summaryRow("Alerts channel", chat ?? `${v.ALERTS_CHANNEL_ID} (not found: rerun --step alerts)`),
-    summaryRow("Support link", v.INTEGRATOR_RELAY_URL ? `on, as "${v.INTEGRATOR_CLIENT_SLUG}"` : "off"),
   ];
 }
 
@@ -403,12 +399,6 @@ function duration(kind: string | undefined, text: string): string[] {
   return [String(m)];
 }
 
-function clock(text: string): string[] {
-  const c = parseClockInput(text);
-  if (c === null) throw new Stop(1, `"${text.trim()}" isn't a time. Type one like 9 pm, 7:30 am or 21:00.`);
-  return [c];
-}
-
 function where(text: string): string[] {
   const w = normaliseWhere(text);
   if (!w.ok) throw new Stop(1, w.problem);
@@ -450,16 +440,6 @@ async function main(args: string[]): Promise<string[]> {
       return [IMPACT_SQL];
     case "test-message":
       return testMessage(rest[0] ?? "");
-    case "relay-url": {
-      const u = checkRelayUrl(rest[0] ?? "");
-      if (!u.ok) throw new Stop(1, u.problem);
-      return [u.value];
-    }
-    case "slug": {
-      const s = checkClientSlug(rest[0] ?? "");
-      if (!s.ok) throw new Stop(1, s.problem);
-      return [s.value];
-    }
     case "automated":
       if (!soundsAutomated(rest[0] ?? "")) throw new Stop(1, "no");
       return ["yes"];
@@ -467,21 +447,14 @@ async function main(args: string[]): Promise<string[]> {
       return zone(rest[0] ?? "");
     case "duration":
       return duration(rest[0], rest[1] ?? "");
-    case "clock":
-      return clock(rest[0] ?? "");
     case "where":
       return where(rest[0] ?? "");
     case "grace-example":
       return graceExample(minutesArg(rest[0]));
     case "delay-timeline":
       return delayTimeline(minutesArg(rest[0]), minutesArg(rest[1]));
-    case "quiet-example": {
-      const [g, d, from, until] = rest;
-      const quiet = from && until ? { from: clock(from)[0]!, until: clock(until)[0]! } : null;
-      return quietExample(minutesArg(g), minutesArg(d), quiet);
-    }
-    case "clock-label":
-      return [clockLabel(clock(rest[0] ?? "")[0]!)];
+    case "quiet-example":
+      return quietExample(minutesArg(rest[0]), minutesArg(rest[1]), rest[2] !== "off");
     case "duration-label":
       return [formatDuration(minutesArg(rest[0]))];
     default:

@@ -15,8 +15,7 @@
  * (./blocks.ts, #34), then Failure Alerts go (./failureAlerts.ts): they
  * report what earlier runs found, and get the minute's first calls. Last, the
  * blocks this run found and the daily allowance left are recorded for the
- * next run. With the Integrator Relay set up, the run first sends the daily
- * check-in, if it's due (#36).
+ * next run.
  *
  * A block (a rejected API key, or a setting pointing at something gone)
  * holds the steps that need it, without counting against them.
@@ -36,7 +35,6 @@ import type { ConnecteamClient } from "../connecteam/client.js";
 import type { Settings } from "../env.js";
 import type { SchedulerReads } from "../escalation/scheduledShift.js";
 import { reminderShiftEnded, reminderStillOpen } from "../messages/reminder.js";
-import type { RelaySender } from "../relay/send.js";
 import type { Block, ShiftRow, Undelivered, WorkList } from "../store.js";
 import { fullName, undelivered } from "./backoff.js";
 import { held, liftBlocks, pausedByKey, recordBlocks } from "./blocks.js";
@@ -59,12 +57,7 @@ export interface DueStepDeps {
   log?: (event: Record<string, unknown>) => void;
   /** The blocks in force this run (#34), set once they've been lifted or not. */
   blocks?: ReadonlySet<Block>;
-  /** Sends to the Integrator Relay (#36); absent when it isn't set up. */
-  relay?: RelaySender;
 }
-
-/** The Deployment checks in with the Integrator Relay this often (#36). The relay reports 36 hours of silence. */
-export const CHECK_IN_SECONDS = 24 * 60 * 60;
 
 /** The most Shifts one run takes. */
 const BATCH = 25;
@@ -72,7 +65,6 @@ const BATCH = 25;
 export async function runDueSteps(input: DueStepDeps): Promise<
   Record<StepResult, number> & {
     summary: Awaited<ReturnType<typeof runSummaries>>;
-    checkedIn: boolean;
     blocks: Block[];
     alerts: AlertResult;
     tasks: Record<TaskStepResult, number>;
@@ -84,8 +76,6 @@ export async function runDueSteps(input: DueStepDeps): Promise<
   if (await input.store.noteComplianceForm(input.settings.complianceFormId)) {
     (input.log ?? (() => {}))({ evt: "compliance_form_switched", formId: input.settings.complianceFormId });
   }
-  // First, and needing no Connecteam call: a paused Deployment still checks in.
-  const checkedIn = await checkIn(input);
   const deps: DueStepDeps = { ...input, blocks: await liftBlocks(input) };
   const alerts = await runFailureAlerts(deps);
   const counts: Record<StepResult, number> = {
@@ -136,17 +126,7 @@ export async function runDueSteps(input: DueStepDeps): Promise<
   const blocks = await recordBlocks(deps);
   const dayRemaining = deps.ct.lastRateLimit?.dayRemaining;
   if (dayRemaining != null) await deps.store.setState("day_remaining", dayRemaining);
-  return { ...counts, summary, checkedIn, blocks, alerts, tasks, sweep, paused };
-}
-
-/** The daily check-in with the Integrator Relay (#36), claimed so overlapping runs send one. */
-async function checkIn(deps: DueStepDeps): Promise<boolean> {
-  if (!deps.relay) return false;
-  const claim = await deps.store.claimCheckIn(deps.now, CHECK_IN_SECONDS);
-  if (!claim) return false;
-  if (await deps.relay({ kind: "check_in" })) return true;
-  await deps.store.releaseCheckIn(claim.previous);
-  return false;
+  return { ...counts, summary, blocks, alerts, tasks, sweep, paused };
 }
 
 async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<StepResult> {

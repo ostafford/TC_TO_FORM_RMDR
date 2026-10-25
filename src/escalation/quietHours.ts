@@ -1,7 +1,8 @@
 /**
  * Quiet Hours (#16, #29): a nightly window in the Deployment's one named time
- * zone, during which Escalations wait. Pure, so the clock maths (a window
- * across midnight, daylight saving) is tested without a Worker.
+ * zone, during which Escalations wait. Fixed at 9 pm to 7 am; a Deployment
+ * only turns them on or off. Pure, so the clock maths (a window across
+ * midnight, daylight saving) is tested without a Worker.
  */
 
 /** From and until, in minutes after local midnight. A window with from > until runs across midnight. */
@@ -10,11 +11,8 @@ export interface QuietHours {
   until: number;
 }
 
-/** "21:00" -> 1260, or `null` for anything but a 24-hour HH:MM. */
-export function parseClock(text: string): number | null {
-  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(text.trim());
-  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
-}
+/** Every Deployment's Quiet Hours when they're on: 9 pm to 7 am. */
+export const QUIET_HOURS: QuietHours = { from: 21 * 60, until: 7 * 60 };
 
 /** Whether `at` (Unix seconds) falls in Quiet Hours, by the local clock in `zone`. Equal ends mean never. */
 export function isQuiet(at: number, zone: string, q: QuietHours): boolean {

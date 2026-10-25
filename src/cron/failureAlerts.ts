@@ -21,13 +21,6 @@
  * still reach the client in the next all clear. With the API key rejected,
  * no post can get through Connecteam; the alert stays owed, and the all clear
  * reports once the key works.
- *
- * With the Integrator Relay set up (#36), each condition is also sent there:
- * once when it's raised, whether or not the Alerts Channel post got through
- * (that's the point: it reaches the integrator when Connecteam can't), and
- * once when it clears. Claimed apart from the channel post, so a relay that
- * fails never blocks or repeats the post, and is tried again next run. The
- * relay's issues are on a public repo, so it gets counts, never staff names.
  */
 import {
   allClear,
@@ -65,12 +58,8 @@ export interface AlertResult {
   failed: number;
 }
 
-/**
- * Where a condition stands this run: the alert's text, recovered, or neither
- * (still settling). `relayed` is the text for the Integrator Relay when it
- * differs: without staff names, as its issues are on a public repo (#36).
- */
-type Standing = { alert: string; relayed?: string } | "recovered" | "neither";
+/** Where a condition stands this run: the alert's text, recovered, or neither (still settling). */
+type Standing = { alert: string } | "recovered" | "neither";
 
 export async function runFailureAlerts(deps: DueStepDeps): Promise<AlertResult> {
   const { store, now } = deps;
@@ -117,28 +106,20 @@ async function evaluate(
     } else if (opts.quietWhenHeld) {
       await store.raiseQuietly(condition);
     }
-    return relay(condition, "raised", standing.relayed ?? standing.alert, deps);
+    return;
   }
   const claim = await store.claimAllClear(condition, now);
-  const text = await (claim ? allClearOnce(condition, claim, deps, result) : null);
-  // A retry, the all clear's own text gone, says the plain one.
-  await relay(condition, "cleared", text ?? allClear({ recovered: condition, sends: [] }), deps);
+  if (claim) await allClearOnce(condition, claim, deps, result);
 }
 
-/** Post the claimed all clear. Returns its text for the relay (no names), or `null` when its post failed. */
-async function allClearOnce(
-  condition: AlertCondition,
-  claim: { quiet: boolean },
-  deps: DueStepDeps,
-  result: AlertResult,
-): Promise<string | null> {
+/** Post the claimed all clear. */
+async function allClearOnce(condition: AlertCondition, claim: { quiet: boolean }, deps: DueStepDeps, result: AlertResult): Promise<void> {
   const { store, now } = deps;
   const sends = await store.openUndelivered(condition);
-  const relayed = allClear({ recovered: condition, sends, anonymous: true });
   if (claim.quiet && sends.length === 0) {
     // The client never heard of it, and nothing was missed: nothing to say.
     await store.allClearPosted(condition, [], now);
-    return relayed;
+    return;
   }
   if (await post(condition, "all_clear", allClear({ recovered: condition, sends }), deps, result)) {
     await store.allClearPosted(
@@ -146,21 +127,9 @@ async function allClearOnce(
       sends.map((s) => s.sendKey),
       now,
     );
-    return relayed;
+    return;
   }
   await store.releaseAllClear(condition);
-  return null;
-}
-
-/**
- * Tell the relay, once per change (#36). The claim only succeeds while the
- * condition is in that state for the Alerts Channel, so a held-back alert
- * that stayed clear isn't relayed, and an all clear whose post failed (still
- * raised) waits for its retry.
- */
-async function relay(condition: AlertCondition, to: "raised" | "cleared", text: string, deps: DueStepDeps): Promise<void> {
-  if (!deps.relay || !(await deps.store.claimRelay(condition, to))) return;
-  if (!(await deps.relay({ kind: "alert", condition, state: to, text }))) await deps.store.releaseRelay(condition, to);
 }
 
 /** Sends given up on, and nothing gone out since: alert, listing them. */
@@ -174,7 +143,7 @@ async function messages(deps: DueStepDeps, result: AlertResult): Promise<void> {
     cause: failureCause(latest),
     sends,
   };
-  const standing = { alert: messagesNotSending(input), relayed: messagesNotSending({ ...input, anonymous: true }) };
+  const standing = { alert: messagesNotSending(input) };
   // Held back: no alert, but the all clear will list these.
   await evaluate("messages", standing, deps, result, { quietWhenHeld: true });
 }

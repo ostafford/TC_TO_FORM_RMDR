@@ -70,8 +70,4 @@ describe("RUNBOOK teardown section", () => {
     expect(webhooks).toBeLessThan(deleteWorker);
     for (const feature of ["time_activity", "form_submission", "task_completed"]) expect(teardown).toContain(feature);
   });
-
-  it("never tears down the Integrator Relay with a Deployment", () => {
-    expect(teardown).toMatch(/Integrator Relay[\s\S]*never torn down with a Deployment/);
-  });
 });

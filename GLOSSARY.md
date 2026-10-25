@@ -48,7 +48,7 @@ _Avoid_: quick task (on its own, it's ambiguous with any other Quick Task)
 The chat direct message sent to each **Admin** except **Excluded Admins**, and to the employee's direct manager where the account uses direct managers, when a Missed Form is still unsubmitted after a further configurable delay. It says who missed the form and for which Shift, never any form content.
 
 **Quiet Hours**:
-A nightly window, set per Deployment in the Deployment's time zone (default 9 pm to 7 am, can be turned off), during which Escalations wait. Reminders, Reminder Tasks and Failure Alerts are never held.
+A nightly window, 9 pm to 7 am in the Deployment's time zone, during which Escalations wait. Fixed for every Deployment; each one only turns it on (the default) or off. Reminders, Reminder Tasks and Failure Alerts are never held.
 
 **Escalation Summary**:
 One message per recipient, sent when Quiet Hours end, combining every Escalation held overnight.
@@ -69,9 +69,6 @@ _Avoid_: system alert, error notification
 **Alerts Channel**:
 The Connecteam chat channel, chosen at setup, where a Deployment's Failure Alerts are posted for the client.
 _Avoid_: admin channel
-
-**Integrator Relay**:
-A small service the integrator hosts once, outside every Deployment, that receives Failure Alerts and daily health check-ins and turns them into issues for the integrator. It also notices a Deployment that stops checking in. It reaches the integrator when Connecteam itself can't.
 
 ## Relationships
 
