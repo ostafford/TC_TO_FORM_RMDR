@@ -203,7 +203,8 @@ finish() {
 # Example. The flow follows the prototype on prototype/setup-wizard (3a5a222).
 #
 #   npm run setup                      full first-time setup
-#   npm run setup -- --step NAME       rerun one step
+#   npm run setup -- --support         the same, with the support link an integrator gave
+#   npm run setup -- --step NAME       rerun one step, then apply it
 #   npm run setup -- --help
 #
 # Everything it captures goes to the git-ignored .dev.vars, which the
@@ -217,10 +218,8 @@ finish() {
 
 ENV_FILE="${WIZARD_ENV_FILE:-.dev.vars}"
 
-# Every step in the order setup runs them, and the ones --step can rerun (#19).
-STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test)
-# Built so far; webhook arrives with #41.
-BUILT_STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts test)
+# Every step in the order setup runs them, and the ones --step can rerun (#19, #41).
+STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts support webhook test)
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   RED=$(tput setaf 1)
@@ -374,6 +373,45 @@ saved_or() {
   printf '%s' "${v:-$2}"
 }
 
+# point "text": one bullet wrapped at 76 columns, continuation lines under the text.
+point() {
+  local line first=1
+  while IFS= read -r line; do
+    if [[ -n "$first" ]]; then step "$line"; first=""; else printf '    %s\n' "$line"; fi
+  done < <(printf '%s\n' "$1" | fold -s -w 72 | sed 's/ *$//')
+}
+
+# find_by_name VAR "Prompt" DEFAULT ZERO NONE MANY LABEL...: read part of a
+# name until it picks one LABEL; its index (from 0) goes into $VAR. A label
+# typed in full picks it, and several matches are listed to pick from. With
+# ZERO set, 0 is an answer too ($VAR is -1). NONE and MANY finish "No …
+# matches" and "12 … match".
+find_by_name() {
+  # fb_ locals, so ask_default's and choose's can't hide them.
+  local fb_var="$1" fb_prompt="$2" fb_def="$3" fb_zero="$4" fb_none="$5" fb_many="$6" fb_in fb_lower fb_i fb_n fb_m fb_shown
+  shift 6
+  local fb_labels=("$@")
+  while :; do
+    ask_default fb_in "$fb_prompt" "$fb_def" || return 1
+    if [[ -n "$fb_zero" && "$fb_in" == 0 ]]; then printf -v "$fb_var" '%s' -1; return 0; fi
+    if [[ -z "$fb_in" ]]; then fail "Type part of a name."; continue; fi
+    fb_lower=$(printf '%s' "$fb_in" | tr '[:upper:]' '[:lower:]')
+    fb_m=()
+    for ((fb_i = 0; fb_i < $#; fb_i++)); do
+      [[ "${fb_labels[$fb_i]}" == "$fb_in" ]] && { fb_m=("$fb_i"); break; }
+      [[ "$(printf '%s' "${fb_labels[$fb_i]}" | tr '[:upper:]' '[:lower:]')" == *"$fb_lower"* ]] && fb_m+=("$fb_i")
+    done
+    if (( ${#fb_m[@]} == 0 )); then fail "No $fb_none matches \"$fb_in\"."; continue; fi
+    if (( ${#fb_m[@]} == 1 )); then printf -v "$fb_var" '%s' "${fb_m[0]}"; return 0; fi
+    if (( ${#fb_m[@]} > 20 )); then fail "${#fb_m[@]} $fb_many match. Type more of the name."; continue; fi
+    fb_shown=()
+    for fb_i in "${fb_m[@]}"; do fb_shown+=("${fb_labels[$fb_i]}"); done
+    choose fb_n "Which one? (number)" "" 1 "${fb_shown[@]}" || return 1
+    printf -v "$fb_var" '%s' "${fb_m[$((fb_n - 1))]}"
+    return 0
+  done
+}
+
 # json_get FIELD: read one field of the JSON on stdin.
 json_get() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const v=JSON.parse(s)[process.argv[1]];process.stdout.write(v==null?"":String(v))}catch{}})' "$1"; }
 
@@ -428,7 +466,12 @@ s_cloudflare() {
     fail "Couldn't read the signed-in Cloudflare account."
     exit 1
   fi
-  printf '%s\n' "$WR_OUT" | grep -E "│|account|Account" | sed 's/^/  /' | head -12
+  # The account table only: the token's scopes, and wrangler's warning about
+  # missing ones, are lines like "- account (read)" (#41).
+  printf '%s\n' "$WR_OUT" | grep -E '[│┌├└]' | sed 's/^/  /' | head -12 || true
+  if grep -qi "missing some expected oauth scopes" <<<"$WR_OUT"; then
+    note "This computer's Cloudflare sign-in is missing some permissions: npx wrangler login refreshes them."
+  fi
   printf '\n'
   confirm "Is that the account the reminder should run on?" || {
     fail "Run 'npx wrangler logout', then run this again and sign in to the right account."
@@ -844,23 +887,37 @@ s_alerts() {
   why "If the reminder itself has a problem (Connecteam is down, the key stops" \
       "working, the form is deleted), it posts here, once per problem, with what" \
       "to do. This is about the system, never about staff."
-  todo "Pick the chat to post problems to, or 0 to create a new channel for them." \
+  todo "Type part of the chat's name to pick it, or 0 to create a new channel for problems." \
        "A new channel's members are the admins ticked in the escalations step."
   example "In \"Form Reminder Alerts\": \"ALERT · FORM NOT FOUND … Action: rerun setup" \
           "step \"Compliance Form\".\""
   need_key
-  local rc ids=() labels=() id label current def=0 i n title members count
+  local rc ids=() labels=() id label current def="" i n title members count channels=0
   rc=0; helper channels || rc=$?
   (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
   [[ -z "$HELPER_OUT" ]] || while IFS=$'\t' read -r id label; do ids+=("$id"); labels+=("$label"); done <<<"$HELPER_OUT"
   current=$(_existing ALERTS_CHANNEL_ID || true)
-  for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$current" ]] && def=$((i + 1)); done
+  for ((i = 0; i < ${#ids[@]}; i++)); do
+    [[ "${ids[$i]}" == "$current" ]] && def="${labels[$i]}"
+    [[ "${labels[$i]}" == *" (channel)" || "${labels[$i]}" == *" (channel, id "* ]] && channels=$((channels + 1))
+  done
   while :; do
-    printf '\n  Chats in your account:\n'
-    choose n "Which chat? (number, or 0 to create a new channel)" "$def" 0 ${labels[@]+"${labels[@]}"} \
+    # The helper lists channels first. An account can have dozens of team chats (#41).
+    if (( ${#labels[@]} == 0 )); then
+      printf '\n  No chats in your account yet.\n'
+    elif (( ${#labels[@]} <= 20 )); then
+      printf '\n  Chats in your account:\n'
+      for ((i = 0; i < ${#labels[@]}; i++)); do step "${labels[$i]}"; done
+    else
+      printf '\n  Channels in your account:\n'
+      for ((i = 0; i < channels && i < 20; i++)); do step "${labels[$i]}"; done
+      (( channels > 0 )) || note "  (none yet)"
+      note "Plus $(( ${#labels[@]} - (channels < 20 ? channels : 20) )) more chats: type part of a name to find one."
+    fi
+    find_by_name n "Which chat? (part of its name, or 0 to create a new channel)" "$def" 0 chat chats ${labels[@]+"${labels[@]}"} \
       || { fail "No chat chosen."; exit 1; }
-    if (( n > 0 )); then
-      save ALERTS_CHANNEL_ID "${ids[$((n - 1))]}" "the alerts channel (${labels[$((n - 1))]})"
+    if (( n >= 0 )); then
+      save ALERTS_CHANNEL_ID "${ids[$n]}" "the alerts channel (${labels[$n]})"
       break
     fi
     ask_default title "Name of the new channel:" "Form Reminder Alerts" || { fail "No name given."; exit 1; }
@@ -875,7 +932,16 @@ s_alerts() {
     fi
     fail "$HELPER_OUT"
   done
-  next_up "the optional support link."
+  if [[ -n "${WITH_SUPPORT:-}" ]]; then next_up "the support link."; else next_up "a tip about Connecteam's own clock-out question."; fi
+}
+
+# no_relay: save "no support link".
+no_relay() {
+  write_env INTEGRATOR_RELAY_URL "" >/dev/null
+  write_env INTEGRATOR_CLIENT_SLUG "" >/dev/null
+  write_env INTEGRATOR_RELAY_SECRET "" >/dev/null
+  ok "Saved: no support link."
+  next_up "a tip about Connecteam's own clock-out question."
 }
 
 s_relay() {
@@ -884,22 +950,17 @@ s_relay() {
       "them directly, even when Connecteam itself can't deliver them, plus a daily" \
       "\"still running\" check. Staff names are never sent, only counts."
   todo "Answer y only if your integrator gave you a support link." \
-       "Then paste the link, the short name they gave you, and the secret."
+       "Then paste the link, the short name they gave you, and the secret." \
+       "Answered y by mistake? Press Enter at the link with nothing typed."
   example "Link: https://clock-out-relay.example.workers.dev" \
           "Name: acme-cleaning (it appears in your integrator's issue titles, which are public)"
   local on input url slug
   ask_yn on "Send problems to your integrator as well?" "$([[ -n "$(saved_or INTEGRATOR_RELAY_URL "")" ]] && echo y || echo n)" \
     || { fail "No answer given."; exit 1; }
-  if [[ "$on" == n ]]; then
-    write_env INTEGRATOR_RELAY_URL "" >/dev/null
-    write_env INTEGRATOR_CLIENT_SLUG "" >/dev/null
-    write_env INTEGRATOR_RELAY_SECRET "" >/dev/null
-    ok "Saved: no support link."
-    next_up "a tip about Connecteam's own clock-out question."
-    return
-  fi
+  if [[ "$on" == n ]]; then no_relay; return; fi
   while :; do
     ask_default input "Support link:" "$(saved_or INTEGRATOR_RELAY_URL "")" || { fail "No link given."; exit 1; }
+    [[ -n "$input" ]] || { no_relay; return; }
     if helper relay-url "$input"; then url="$HELPER_OUT"; break; fi
     fail "$HELPER_OUT"
   done
@@ -962,6 +1023,57 @@ put_secret() {
   note "Store it by hand: npx wrangler secret put $1 --config wrangler.deploy.json"
   note "Full output: ${WIZARD_DETAILS#"$PWD"/}"
   exit 1
+}
+
+# check_config: build and check the deploy config, or stop; settings it
+# would change on the live Worker are shown.
+check_config() {
+  deploy_config || { fail "The deploy settings aren't ready:"; printf '%s\n' "$DC_OUT" | sed 's/^/    /'; return 1; }
+  if grep -q '^!' <<<"$DC_OUT"; then
+    printf '%s\n' "$DC_OUT" | sed -n '/^!/,$p' | sed 's/^/  /'
+  fi
+}
+
+# migrate: bring the database up to date (safe to repeat).
+migrate() {
+  wr_quiet d1 migrations apply "$DB_NAME" --remote --config "$DEPLOY_CONFIG" \
+    || { fail "Couldn't set up the database:"; show_wr_tail; exit 1; }
+  ok "Database up to date."
+}
+
+# deploy_worker: the checked deploy, the Worker's address left in $WORKER_URL.
+WORKER_URL=""
+deploy_worker() {
+  say "Deploying (about a minute)..."
+  wr_quiet deploy --config "$DEPLOY_CONFIG" || { fail "The deploy failed:"; show_wr_tail; exit 1; }
+  WORKER_URL=$(printf '%s' "$WR_OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1 || true)
+}
+
+# need_worker_url: stop when the deploy didn't say where the Worker is.
+need_worker_url() {
+  [[ -z "$WORKER_URL" ]] || return 0
+  fail "Deployed, but couldn't read the reminder's address from Cloudflare."
+  note "Find it in Cloudflare (Workers & Pages > $DB_NAME), then subscribe the webhooks"
+  note "by hand: docs/RUNBOOK.md, \"Subscribing the webhooks\"."
+  exit 1
+}
+
+# subscribe_webhooks: make Connecteam hold exactly this Deployment's subscriptions.
+subscribe_webhooks() {
+  local rc=0 what line
+  helper webhooks "$WORKER_URL/webhook" || rc=$?
+  while IFS=$'\t' read -r what line; do
+    case "$what" in
+      updated) ok "Connecteam webhook updated: $line" ;;
+      created) ok "Connecteam webhook added: $line" ;;
+      removed) ok "Connecteam webhook removed: $line" ;;
+      *) [[ -z "$what" ]] || fail "$what${line:+ $line}" ;;
+    esac
+  done <<<"$HELPER_OUT"
+  if (( rc != 0 )); then
+    note "Rerun npm run setup -- --step webhook to try again: it updates what's there rather than adding more."
+    exit 1
+  fi
 }
 
 s_summary() {
@@ -1036,18 +1148,9 @@ s_turn_on() {
   write_env D1_DATABASE_ID "$db" >/dev/null
 
   # Every remote command from here goes through the checked config.
-  deploy_config || { fail "The deploy settings aren't ready:"; printf '%s\n' "$DC_OUT" | sed 's/^/    /'; exit 1; }
-  if grep -q '^!' <<<"$DC_OUT"; then
-    printf '%s\n' "$DC_OUT" | sed -n '/^!/,$p' | sed 's/^/  /'
-  fi
-  wr_quiet d1 migrations apply "$DB_NAME" --remote --config "$DEPLOY_CONFIG" \
-    || { fail "Couldn't set up the database:"; show_wr_tail; exit 1; }
-  ok "Database up to date."
-
-  say "Deploying (about a minute)..."
-  wr_quiet deploy --config "$DEPLOY_CONFIG" || { fail "The deploy failed:"; show_wr_tail; exit 1; }
-  local url
-  url=$(printf '%s' "$WR_OUT" | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1 || true)
+  check_config || exit 1
+  migrate
+  deploy_worker
   # Secrets after the deploy: `secret put` on a Worker that doesn't exist yet
   # stops to ask whether to create one.
   put_secret CT_API_KEY "$CT_API_KEY" "the API key"
@@ -1055,30 +1158,46 @@ s_turn_on() {
   local relay_secret
   relay_secret=$(_existing INTEGRATOR_RELAY_SECRET || true)
   [[ -z "$relay_secret" ]] || put_secret INTEGRATOR_RELAY_SECRET "$relay_secret" "the support link's secret"
-  if [[ -z "$url" ]]; then
-    fail "Deployed, but couldn't read the reminder's address from Cloudflare."
-    note "Find it in Cloudflare (Workers & Pages > $DB_NAME), then subscribe the webhooks"
-    note "by hand: docs/RUNBOOK.md, \"Subscribing the webhooks\"."
-    exit 1
-  fi
-  ok "Deployed: $url"
-
-  local rc=0 what line
-  helper webhooks "$url/webhook" || rc=$?
-  while IFS=$'\t' read -r what line; do
-    case "$what" in
-      updated) ok "Connecteam webhook updated: $line" ;;
-      created) ok "Connecteam webhook added: $line" ;;
-      removed) ok "Connecteam webhook removed: $line" ;;
-      *) [[ -z "$what" ]] || fail "$what${line:+ $line}" ;;
-    esac
-  done <<<"$HELPER_OUT"
-  if (( rc != 0 )); then
-    note "Rerun npm run setup to try again: it updates what's there rather than adding more."
-    exit 1
-  fi
+  need_worker_url
+  ok "Deployed: $WORKER_URL"
+  subscribe_webhooks
   ok "Installed. It checks every minute from now on."
   next_up "a test message."
+}
+
+s_webhook() {
+  stage "Connecteam webhooks"
+  why "Connecteam tells the reminder about clock-outs, form submissions and ticked" \
+      "tasks through three webhook subscriptions. This puts back exactly those" \
+      "three, for this reminder's address only. Other integrations' webhooks on" \
+      "your account are never touched."
+  todo "Wait while it redeploys the reminder as it is, to read its address. No setting changes." \
+       "Check what will change in Connecteam, then answer y."
+  example "Update: forms (id 5012)" \
+          "Left alone: 2 other webhooks on your account"
+  need_key
+  [[ -n "$(_existing D1_DATABASE_ID || true)" ]] || { fail "The reminder isn't on yet. Turn it on first: npm run setup"; exit 1; }
+  printf '\n'
+  check_config || exit 1
+  deploy_worker
+  need_worker_url
+  ok "Deployed: $WORKER_URL"
+  local rc=0 what line
+  helper webhooks "$WORKER_URL/webhook" --plan || rc=$?
+  (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
+  printf '\n  %sWhat this changes%s\n' "$BOLD" "$RESET"
+  while IFS=$'\t' read -r what line; do
+    case "$what" in
+      update) step "Update: $line" ;;
+      create) step "Add: $line" ;;
+      remove) step "Remove: $line" ;;
+      others) if [[ "$line" == 1 ]]; then step "Left alone: 1 other webhook on your account"; else step "Left alone: $line other webhooks on your account"; fi ;;
+    esac
+  done <<<"$HELPER_OUT"
+  printf '\n'
+  confirm "Make these changes in Connecteam?" || { note "Nothing changed in Connecteam."; return 0; }
+  subscribe_webhooks
+  ok "Done. Connecteam sends this reminder exactly what it needs."
 }
 
 s_test() {
@@ -1090,7 +1209,7 @@ s_test() {
        "Check it arrives on their phone."
   example "Type part of a name, like \"jor\" for Jordan Lee, then pick from the matches."
   need_key
-  local rc=0 ids=() labels=() id label def="" owners=0 input lower matches=() i n pick=""
+  local rc=0 ids=() labels=() id label def="" owners=0 pick=""
   helper users || rc=$?
   (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
   while IFS=$'\t' read -r id label; do
@@ -1098,23 +1217,8 @@ s_test() {
     if [[ "$label" == *" (owner)" ]]; then owners=$((owners + 1)); def="$label"; fi
   done <<<"$HELPER_OUT"
   (( owners == 1 )) || def=""
-  while :; do
-    ask_default input "Send the test to (part of a name):" "$def" || { fail "No one picked."; exit 1; }
-    lower=$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]')
-    matches=()
-    for i in "${!labels[@]}"; do
-      [[ "${labels[$i]}" == "$input" ]] && { matches=("$i"); break; }
-      [[ -n "$lower" && "$(printf '%s' "${labels[$i]}" | tr '[:upper:]' '[:lower:]')" == *"$lower"* ]] && matches+=("$i")
-    done
-    if (( ${#matches[@]} == 0 )); then fail "No one matches \"$input\"."; continue; fi
-    if (( ${#matches[@]} == 1 )); then pick="${matches[0]}"; break; fi
-    if (( ${#matches[@]} > 20 )); then fail "${#matches[@]} people match. Type more of the name."; continue; fi
-    local shown=()
-    for i in "${matches[@]}"; do shown+=("${labels[$i]}"); done
-    choose n "Which one? (number)" "" 1 "${shown[@]}" || { fail "No one picked."; exit 1; }
-    pick="${matches[$((n - 1))]}"
-    break
-  done
+  find_by_name pick "Send the test to (part of a name):" "$def" "" one people ${labels[@]+"${labels[@]}"} \
+    || { fail "No one picked."; exit 1; }
   confirm "Send the test reminder to ${labels[$pick]} now?" || { note "Not sent. Send one later with: npm run setup -- --step test"; return 0; }
   rc=0
   helper test-message "${ids[$pick]}" || rc=$?
@@ -1139,7 +1243,60 @@ s_done() {
   note "To change one thing later: npm run setup -- --step NAME (see --help)."
 }
 
-# Each built step by --step name, and how many stages it shows.
+# apply_rerun BEFORE: after a --step rerun on a running Deployment (#41),
+# say what the change affects, counted in D1, then on a yes run the checking
+# deploy, store a secret that changed, and move the webhooks a form or board
+# change moves. On a no, .dev.vars goes back to the copy BEFORE.
+apply_rerun() {
+  local before="$1" keys l d1
+  helper changed "$before" || { fail "$HELPER_OUT"; exit 1; }
+  keys=$'\n'"$HELPER_OUT"$'\n'
+  printf '\n'
+  if [[ -z "${HELPER_OUT//[[:space:]]/}" ]]; then ok "Nothing changed, so there's nothing to apply."; return 0; fi
+  if [[ -z "$(_existing D1_DATABASE_ID || true)" ]]; then
+    note "Saved to $ENV_FILE. It goes live when you finish setup: npm run setup"
+    return 0
+  fi
+  if ! check_config; then
+    restore_env "$before"
+    note "Fix that, then rerun this step."
+    exit 1
+  fi
+  d1=$(mktemp)
+  helper impact-sql
+  if wr_quiet d1 execute "$DB_NAME" --remote --json --config "$DEPLOY_CONFIG" --command "$HELPER_OUT"; then
+    printf '%s' "$WR_OUT" > "$d1"
+  fi
+  helper impact "$before" "$d1" || true
+  rm -f "$d1"
+  printf '\n  %sWhat this changes%s\n' "$BOLD" "$RESET"
+  while IFS= read -r l; do [[ -z "$l" ]] || point "$l"; done <<<"$HELPER_OUT"
+  printf '\n'
+  if ! confirm "Apply it now?"; then
+    restore_env "$before"
+    return 0
+  fi
+  migrate
+  deploy_worker
+  [[ "$keys" != *$'\nCT_API_KEY\n'* ]] || put_secret CT_API_KEY "$(_existing CT_API_KEY)" "the API key"
+  if [[ "$keys" == *$'\nINTEGRATOR_RELAY_SECRET\n'* && -n "$(_existing INTEGRATOR_RELAY_SECRET || true)" ]]; then
+    put_secret INTEGRATOR_RELAY_SECRET "$(_existing INTEGRATOR_RELAY_SECRET)" "the support link's secret"
+  fi
+  if [[ "$keys" == *$'\nCOMPLIANCE_FORM_ID\n'* || "$keys" == *$'\nTASK_BOARD_ID\n'* ]]; then
+    need_worker_url
+    subscribe_webhooks
+  fi
+  ok "Applied. The reminder uses it from its next check, within a minute."
+}
+
+# restore_env BEFORE: put .dev.vars back as the copy BEFORE has it.
+restore_env() {
+  if [[ -f "$1" ]]; then cat "$1" > "$ENV_FILE"; else rm -f "$ENV_FILE"; fi
+  WRITTEN_ENV=()
+  warn "Not applied. $ENV_FILE is back as it was."
+}
+
+# Each step by --step name, and how many stages it shows.
 run_step() {
   case "$1" in
     key) s_key ;;
@@ -1150,14 +1307,16 @@ run_step() {
     recipients) s_recipients ;;
     reminder-task) s_task ;;
     sender) s_sender ;;
-    alerts) s_alerts; s_relay ;;
+    alerts) s_alerts ;;
+    support) s_relay ;;
+    webhook) s_webhook ;;
     test) s_test ;;
   esac
 }
 step_stages() {
   case "$1" in
     form) echo 3 ;;
-    timings | alerts) echo 2 ;;
+    timings) echo 2 ;;
     *) echo 1 ;;
   esac
 }
@@ -1167,7 +1326,8 @@ usage() {
 Clock-out Form Reminder setup
 
   npm run setup                    full first-time setup
-  npm run setup -- --step NAME     rerun one step
+  npm run setup -- --support       the same, with the support link your integrator gave you
+  npm run setup -- --step NAME     rerun one step, see what it affects, then apply it
   npm run setup -- --help          this message
 
 Steps: ${STEPS[*]}
@@ -1177,9 +1337,11 @@ USAGE
 run_wizard() {
 
 ONLY=""
+WITH_SUPPORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --step) ONLY="${2:-}"; [[ -n "$ONLY" ]] || { usage >&2; exit 2; }; shift ;;
+    --support) WITH_SUPPORT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -1187,10 +1349,6 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ -n "$ONLY" ]]; then
   [[ " ${STEPS[*]} " == *" $ONLY "* ]] || { printf 'unknown step: %s\n\n' "$ONLY" >&2; usage >&2; exit 2; }
-  [[ " ${BUILT_STEPS[*]} " == *" $ONLY "* ]] || {
-    printf 'The "%s" step isn'"'"'t in this version of the wizard yet.\n' "$ONLY" >&2
-    exit 2
-  }
 fi
 
 # ── prerequisites (before anything is asked, so a missing tool fails fast) ─
@@ -1223,17 +1381,21 @@ fi
 
 if [[ -n "$ONLY" ]]; then
   TOTAL_STAGES=$(step_stages "$ONLY")
+  # A copy of .dev.vars as it was (it holds keys: mktemp makes it 0600), to
+  # compare with and to put back if the change isn't applied.
+  RERUN_BEFORE=$(mktemp)
+  trap 'rm -f "$RERUN_BEFORE"' EXIT
+  if [[ -f "$ENV_FILE" ]]; then cat "$ENV_FILE" > "$RERUN_BEFORE"; else rm -f "$RERUN_BEFORE"; fi
   run_step "$ONLY"
-  if [[ "$ONLY" != test ]]; then
-    printf '\n'
-    note "Saved to $ENV_FILE. Apply it with: npm run deploy"
-    note "(Rerunning a step deploys for you once #41 is in.)"
-  fi
+  case "$ONLY" in test | webhook) ;; *) apply_rerun "$RERUN_BEFORE" ;; esac
   finish
   return
 fi
 
-TOTAL_STAGES=18
+# The support link is asked only when an integrator gave one: with --support,
+# or when one is saved, so a rerun keeps it (#41).
+[[ -z "$(saved_or INTEGRATOR_RELAY_URL "")" ]] || WITH_SUPPORT=1
+if [[ -n "$WITH_SUPPORT" ]]; then TOTAL_STAGES=18; else TOTAL_STAGES=17; fi
 banner "Clock-out Form Reminder: setup"
 s_cloudflare
 s_key
@@ -1244,7 +1406,8 @@ s_quiet
 s_recipients
 s_task
 s_sender
-s_alerts; s_relay
+s_alerts
+[[ -z "$WITH_SUPPORT" ]] || s_relay
 s_tip
 s_summary
 s_turn_on

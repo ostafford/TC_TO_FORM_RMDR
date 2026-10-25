@@ -13,15 +13,21 @@
  *                     `direct <tab> LINE` saying whether direct managers are used
  *   boards            live task boards:                BOARD ID <tab> NAME
  *   publishers        custom publishers:               PUBLISHER ID <tab> NAME
- *   channels          chats (not private ones):        CONVERSATION ID <tab> LABEL
+ *   channels          chats (not private ones), channels first: CONVERSATION ID <tab> LABEL
  *   create-channel TITLE USER,ID,...   a new channel with those members: its id
  *   users             active users, for the test:      USER ID <tab> LABEL
  *
  * Reading .dev.vars as well (WIZARD_ENV_FILE, else .dev.vars):
  *   summary           every setting as a summary row, ids turned into names;
  *                     exit 1 with one line per setting still missing
- *   webhooks URL      makes Connecteam hold exactly this Deployment's three
- *                     subscriptions to URL: `updated|created|removed <tab> WHAT`
+ *   webhooks URL [--plan]   makes Connecteam hold exactly this Deployment's three
+ *                     subscriptions to URL: `updated|created|removed <tab> WHAT`;
+ *                     with --plan, changes nothing and says `update|create|remove
+ *                     <tab> WHAT` for each, then `others <tab> COUNT` left alone
+ *   changed BEFORE    each key that differs from the copy BEFORE, one a line
+ *   impact BEFORE D1OUT   what changing .dev.vars from the file BEFORE affects,
+ *                     one line each, with counts from D1OUT (a file holding
+ *                     `wrangler d1 execute --json` output of impact-sql)
  *   test-message USER ID   sends one real Reminder for a sample Shift as the
  *                     publisher: the message, then exit 0 sent, 4 not sent
  *
@@ -33,6 +39,7 @@
  *   grace-example GRACE | delay-timeline GRACE DELAY
  *   quiet-example GRACE DELAY [FROM UNTIL]      (minutes; "HH:MM"; none is off)
  *   clock-label HH:MM | duration-label MINUTES
+ *   impact-sql        the D1 query `impact` reads the counts of
  *
  * Exit: 0 done, 1 what was typed won't do (the reason is printed), 3 the key
  * was rejected, 4 Connecteam couldn't be read.
@@ -57,6 +64,7 @@ import type { ConnecteamUser, Conversation } from "../src/connecteam/types.js";
 import { readFileSync } from "node:fs";
 import { parseDevVars } from "./lib/deploy-config.js";
 import { planWebhooks, sampleShift, settingProblems, STEP_OF, summaryRow, wantedWebhooks, type ExistingWebhook } from "./lib/wizard-turn-on.js";
+import { IMPACT_SQL, changedKeys, impactLines, parseCounts } from "./lib/wizard-rerun.js";
 import { reminderShiftEnded } from "../src/messages/reminder.js";
 import { fullName } from "./lib/wizard-people.js";
 import {
@@ -168,6 +176,8 @@ async function publishers(): Promise<string[]> {
 
 async function channels(): Promise<string[]> {
   const rows = await allPages("/chat/v1/conversations", SMALL_PAGE, (b) => (b as { data?: { conversations?: Conversation[] } }).data?.conversations);
+  // Channels first: an account can have dozens of team chats (#41).
+  rows.sort((a, b) => Number(b.type === "channel") - Number(a.type === "channel"));
   const labels = conversationLabels(rows);
   return rows.map((c, i) => `${c.id}\t${labels[i]}`);
 }
@@ -256,12 +266,21 @@ async function listWebhooks(): Promise<ExistingWebhook[]> {
   return allPages("/settings/v1/webhooks", SMALL_PAGE, (b) => (b as { data?: { webhooks?: ExistingWebhook[] } }).data?.webhooks);
 }
 
-async function webhooks(target: string): Promise<string[]> {
+async function webhooks(target: string, dryRun: boolean): Promise<string[]> {
   if (!/^https:\/\//.test(target)) throw new Stop(1, `"${target}" isn't the Worker's https:// address.`);
   const v = devVars();
   const secret = v.CT_WEBHOOK_SECRET?.trim();
   if (!secret) throw new Stop(1, "No webhook secret saved yet.");
-  const plan = planWebhooks(await listWebhooks(), wantedWebhooks(target, secret, v), target);
+  const existing = await listWebhooks();
+  const plan = planWebhooks(existing, wantedWebhooks(target, secret, v), target);
+  if (dryRun) {
+    return [
+      ...plan.update.map((u) => `update\t${u.body.featureType} (id ${u.id})`),
+      ...plan.create.map((b) => `create\t${b.featureType}`),
+      ...plan.remove.map((id) => `remove\textra webhook (id ${id})`),
+      `others\t${existing.filter((w) => w.url !== target).length}`,
+    ];
+  }
   const done: string[] = [];
   const failed = (what: string, res: Response) =>
     new Stop(4, [...done, `Connecteam answered HTTP ${res.status} when it was asked to ${what}.`].join("\n"));
@@ -317,6 +336,30 @@ async function testMessage(userId: string): Promise<string[]> {
     throw new Stop(4, `Connecteam didn't send it (HTTP ${res.status}${detail ? `: ${detail}` : ""}).`);
   }
   return text.split("\n");
+}
+
+/** .dev.vars as it was before a step, from a copy (none: it didn't exist yet). */
+function before(path: string): Record<string, string> {
+  try {
+    return parseDevVars(readFileSync(path, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** What changing .dev.vars from `beforePath` affects (./lib/wizard-rerun.ts). */
+function impact(beforePath: string, d1Path: string): string[] {
+  const was = before(beforePath);
+  const after = devVars();
+  let d1 = "";
+  try {
+    d1 = readFileSync(d1Path, "utf8");
+  } catch {
+    // Unread: the lines go without counts.
+  }
+  const counts = parseCounts(d1);
+  const lines = impactLines(changedKeys(was, after), was, after, counts);
+  return counts ? lines : ["(Couldn't read what's in progress from the database, so no counts.)", ...lines];
 }
 
 function minutesArg(v: string | undefined): number {
@@ -379,7 +422,13 @@ async function main(args: string[]): Promise<string[]> {
     case "summary":
       return summary();
     case "webhooks":
-      return webhooks(rest[0] ?? "");
+      return webhooks(rest[0] ?? "", rest[1] === "--plan");
+    case "impact":
+      return impact(rest[0] ?? "", rest[1] ?? "");
+    case "changed":
+      return changedKeys(before(rest[0] ?? ""), devVars());
+    case "impact-sql":
+      return [IMPACT_SQL];
     case "test-message":
       return testMessage(rest[0] ?? "");
     case "relay-url": {

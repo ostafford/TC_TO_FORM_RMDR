@@ -130,8 +130,8 @@ export const STEP_OF: Record<string, string> = {
   CT_PUBLISHER_ID: "sender",
   CT_PUBLISHER_NAME: "sender",
   ALERTS_CHANNEL_ID: "alerts",
-  INTEGRATOR_RELAY_URL: "alerts",
-  INTEGRATOR_CLIENT_SLUG: "alerts",
+  INTEGRATOR_RELAY_URL: "support",
+  INTEGRATOR_CLIENT_SLUG: "support",
 };
 
 /** "Time zone ............ Australia/Sydney": one summary row, the dots lining the values up. */

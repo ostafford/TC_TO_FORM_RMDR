@@ -1,5 +1,5 @@
 /**
- * The setup wizard (#37 to #40), driven as a person would: the real script
+ * The setup wizard (#37 to #41), driven as a person would: the real script
  * with typed input, no browser, and a fake Connecteam on localhost answering
  * in the shapes the live API sends (rate-limit headers, time clock settings,
  * forms, users, publishers, task boards and chats, tested live 2026-10-24;
@@ -53,7 +53,7 @@ const FORMS = [
 ];
 
 const dm = (id: number | null) => ({ customFieldId: 9, name: "Direct manager", type: "directManager", value: id });
-const USERS = [
+let USERS = [
   { userId: 1, firstName: "Okky", lastName: "Stafford", userType: "owner", isArchived: false, customFields: [dm(null)] },
   { userId: 2, firstName: "Priya", lastName: "Shah", userType: "manager", isArchived: false, customFields: [dm(1)] },
   { userId: 3, firstName: "Marcus", lastName: "Webb", userType: "manager", isArchived: false, customFields: [dm(1)] },
@@ -71,7 +71,7 @@ const PUBLISHERS = [
   { id: 2480518, name: "Compliance Reminders (Automated)", imageUrl: "" },
 ];
 // Twelve chats: more than the 10 a page Connecteam sends unless asked.
-const CHATS = Array.from({ length: 12 }, (_, i) => ({
+let CHATS = Array.from({ length: 12 }, (_, i) => ({
   id: `chat-${i + 1}`,
   title: i === 11 ? "Managers" : `Team ${i + 1}`,
   type: i === 11 ? "channel" : "team",
@@ -176,11 +176,13 @@ beforeAll(async () => {
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
 function run(args: string[], input = "", envFile?: string, extraEnv: Record<string, string> = {}): Promise<{ code: number; out: string }> {
+  // A key in the shell running the tests would stand in for the one in .dev.vars.
+  const { CT_API_KEY: _, ...parent } = process.env;
   return new Promise((resolve) => {
     const child = spawn("bash", [SCRIPT, ...args], {
       cwd: root,
       env: {
-        ...process.env,
+        ...parent,
         NO_COLOR: "1",
         WIZARD_NO_BROWSER: "1",
         WIZARD_LOG: "off", // no `script` recording under test
@@ -215,16 +217,24 @@ describe("the setup wizard's entry points", () => {
     const r = await run(["--help"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("--step NAME");
-    expect(r.out).toContain("Steps: key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test");
+    expect(r.out).toContain("Steps: key timezone form timings quiet-hours recipients reminder-task sender alerts support webhook test");
+    expect(r.out).toContain("--support");
   });
 
-  it("refuses an unknown step, and a step not built yet, before asking anything", async () => {
+  it("refuses an unknown step before asking anything", async () => {
     const unknown = await run(["--step", "nope"]);
     expect(unknown.code).toBe(2);
     expect(unknown.out).toContain("unknown step: nope");
-    const later = await run(["--step", "webhook"]);
-    expect(later.code).toBe(2);
-    expect(later.out).toContain(`The "webhook" step isn't in this version of the wizard yet.`);
+  });
+
+  it("asks for the support link only with --support, or when one is saved (17 stages, else 18)", async () => {
+    // Both stop at the Cloudflare question (no input), after the banner.
+    const plain = await run([], "", tempEnv());
+    expect(plain.out).toContain("17 stages");
+    const asked = await run(["--support"], "", tempEnv());
+    expect(asked.out).toContain("18 stages");
+    const kept = await run([], "", envWithKey("INTEGRATOR_RELAY_URL='https://relay.example.workers.dev'\n"));
+    expect(kept.out).toContain("18 stages");
   });
 });
 
@@ -550,20 +560,45 @@ describe("step 12, the sender name (--step sender)", { timeout: SLOW }, () => {
   });
 });
 
-describe("steps 13 and 14, the Alerts Channel and support link (--step alerts)", { timeout: SLOW }, () => {
-  it("picks an existing chat, found past Connecteam's first page, and no support link", async () => {
+describe("step 13, the Alerts Channel (--step alerts)", { timeout: SLOW }, () => {
+  it("lists channels first, finds a chat by part of its name past Connecteam's first page, and doesn't ask about a support link", async () => {
     const env = envWithKey();
-    const r = await run(["--step", "alerts"], "12\n\n", env);
+    const r = await run(["--step", "alerts"], "manag\n", env);
     expect(r.code).toBe(0);
-    expect(r.out).toContain("12) Managers (channel)");
-    expect(r.out).toContain("1) Team 1 (team chat)");
-    expect(saved(env)).toMatchObject({ ALERTS_CHANNEL_ID: "chat-12", INTEGRATOR_RELAY_URL: "", INTEGRATOR_CLIENT_SLUG: "", INTEGRATOR_RELAY_SECRET: "" });
+    expect(r.out.indexOf("• Managers (channel)")).toBeLessThan(r.out.indexOf("• Team 1 (team chat)"));
+    expect(r.out).not.toContain("Support link (optional)");
+    expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-12");
+    expect(saved(env).INTEGRATOR_RELAY_URL).toBeUndefined();
+  });
+
+  it("with many chats, shows only the channels and narrows the rest by name", async () => {
+    const before = CHATS;
+    CHATS = [...Array.from({ length: 40 }, (_, i) => ({ id: `team-${i + 1}`, title: `Time & Attendance ${i + 1}`, type: "team" })), { id: "chat-ops", title: "Ops", type: "channel" }];
+    const env = envWithKey();
+    const r = await run(["--step", "alerts"], "\ntime\nattendance 3\n2\n", env);
+    CHATS = before;
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("• Ops (channel)");
+    expect(r.out).not.toContain("• Time & Attendance 1 (team chat)");
+    expect(r.out).toContain("Plus 40 more chats: type part of a name to find one.");
+    expect(r.out).toContain("Type part of a name.");
+    expect(r.out).toContain("40 chats match. Type more of the name.");
+    // "attendance 3" is 3 and 30 to 39, in Connecteam's order.
+    expect(r.out).toContain("1) Time & Attendance 3 (team chat)");
+    expect(saved(env).ALERTS_CHANNEL_ID).toBe("team-30");
+  });
+
+  it("on a rerun, Enter keeps the chat saved before", async () => {
+    const env = envWithKey("ALERTS_CHANNEL_ID='chat-3'\n");
+    const r = await run(["--step", "alerts"], "\n", env);
+    expect(r.code).toBe(0);
+    expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-3");
   });
 
   it("0 creates a channel whose members are the ticked Admins", async () => {
     const env = envWithKey("EXCLUDED_ADMIN_IDS='1'\n");
     created.length = 0;
-    const r = await run(["--step", "alerts"], "0\n\ny\nn\n", env);
+    const r = await run(["--step", "alerts"], "0\n\ny\n", env);
     expect(r.code).toBe(0);
     expect(created).toEqual([{ title: "Form Reminder Alerts", type: "channel", assignedUserIds: [3, 2] }]);
     expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-new");
@@ -572,16 +607,19 @@ describe("steps 13 and 14, the Alerts Channel and support link (--step alerts)",
   it("a refused create explains making it in the app, then a chat can be picked instead", async () => {
     const env = envWithKey();
     createStatus = 403;
-    const r = await run(["--step", "alerts"], "0\nAlerts\ny\n12\nn\n", env);
+    const r = await run(["--step", "alerts"], "0\nAlerts\ny\nManagers (channel)\n", env);
     createStatus = 200;
     expect(r.code).toBe(0);
     expect(flat(r.out)).toContain("that needs an API key made by the account owner");
     expect(saved(env).ALERTS_CHANNEL_ID).toBe("chat-12");
   });
 
-  it("the support link takes the link, a public-safe name and the secret, never showing the secret", async () => {
+});
+
+describe("step 14, the support link (--step support)", { timeout: SLOW }, () => {
+  it("takes the link, a public-safe name and the secret, never showing the secret", async () => {
     const env = envWithKey();
-    const r = await run(["--step", "alerts"], "12\ny\nhttp://relay.example\nhttps://relay.example.workers.dev/\nAcme Cleaning!\nAcme-Cleaning\nrelay-secret-123\n", env);
+    const r = await run(["--step", "support"], "y\nhttp://relay.example\nhttps://relay.example.workers.dev/\nAcme Cleaning!\nAcme-Cleaning\nrelay-secret-123\n", env);
     expect(r.code).toBe(0);
     expect(r.out).toContain(`"http://relay.example" isn't an https:// address.`);
     expect(r.out).toContain("Use letters, numbers and dashes only");
@@ -592,6 +630,14 @@ describe("steps 13 and 14, the Alerts Channel and support link (--step alerts)",
       INTEGRATOR_RELAY_SECRET: "relay-secret-123",
     });
   });
+
+  it("a y by mistake: Enter at the link, with nothing typed, saves no support link", async () => {
+    const env = envWithKey();
+    const r = await run(["--step", "support"], "y\n\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Saved: no support link.");
+    expect(saved(env)).toMatchObject({ INTEGRATOR_RELAY_URL: "", INTEGRATOR_CLIENT_SLUG: "", INTEGRATOR_RELAY_SECRET: "" });
+  });
 });
 
 /**
@@ -599,9 +645,13 @@ describe("steps 13 and 14, the Alerts Channel and support link (--step alerts)",
  * every secret logged, and a deploy that prints a workers.dev address as the
  * real one does.
  */
-function fakeWrangler(): { env: Record<string, string>; log: () => string; dir: string } {
+function fakeWrangler(opts: { databaseId?: string; counts?: Record<string, number>; whoami?: string } = {}): { env: Record<string, string>; log: () => string; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "wrangler-"));
   const bin = join(dir, "wrangler");
+  if (opts.databaseId) writeFileSync(join(dir, "d1.json"), JSON.stringify([{ uuid: opts.databaseId, name: "clock-out-form-reminder" }]));
+  // As \`wrangler d1 execute --json\` prints a query's one row; none, and the query fails.
+  if (opts.counts) writeFileSync(join(dir, "counts.json"), JSON.stringify([{ results: [opts.counts], success: true, meta: {} }]));
+  writeFileSync(join(dir, "whoami.txt"), opts.whoami ?? "You are logged in.  │ Example Pty Ltd │ 3f2a91c0 │\n");
   writeFileSync(
     bin,
     `#!/usr/bin/env bash
@@ -609,8 +659,9 @@ state="${dir}/d1.json"; log="${dir}/calls.log"
 [[ -f "$state" ]] || echo '[]' > "$state"
 echo "wrangler $*" >> "$log"
 case "$1 $2" in
-  "whoami "*) echo "You are logged in.  │ Example Pty Ltd │ 3f2a91c0 │" ;;
+  "whoami "*|"whoami") cat "${dir}/whoami.txt" ;;
   "d1 list") cat "$state" ;;
+  "d1 execute") if [[ -f "${dir}/counts.json" ]]; then cat "${dir}/counts.json"; else echo "✘ [ERROR] no such table: shifts" >&2; exit 1; fi ;;
   "d1 create") echo '[{"uuid":"11111111-2222-3333-4444-555555555555","name":"'"$3"'"}]' > "$state"
                echo 'Created your new D1 database. "database_id": "11111111-2222-3333-4444-555555555555"' ;;
   "d1 migrations") echo "Migrations applied" ;;
@@ -641,7 +692,7 @@ const FIRST_RUN = [
   "", // recipients
   "", "1", // reminder task on, board
   "2480518", // publisher
-  "12", "", // alerts channel, no support link
+  "Managers", // alerts channel (no support link asked)
   "", // tip
   "y", // summary
   "", "y", "y", // test: the owner, send, arrived
@@ -661,6 +712,8 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     const env = tempEnv();
     const r = await run([], FIRST_RUN, env, cf.env);
     expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("Stage 17/17 · Test message");
+    expect(r.out).not.toContain("Support link (optional)");
     const v = saved(env);
     const url = "https://clock-out-form-reminder.test.workers.dev/webhook";
 
@@ -678,7 +731,7 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     const calls = cf.log();
     expect(calls).toContain("wrangler d1 create clock-out-form-reminder");
     expect(calls).toMatch(/wrangler d1 migrations apply clock-out-form-reminder --remote --config .*wrangler\.deploy\.json/);
-    expect(calls.indexOf("wrangler deploy")).toBeLessThan(calls.indexOf("wrangler secret put CT_API_KEY"));
+    expect(calls.indexOf("wrangler deploy --config")).toBeLessThan(calls.indexOf("wrangler secret put CT_API_KEY"));
     expect(calls).toContain("secret CT_API_KEY=ct-key-full");
     expect(calls).toContain(`secret CT_WEBHOOK_SECRET=${v.CT_WEBHOOK_SECRET}`);
     expect(calls).not.toContain("INTEGRATOR_RELAY_SECRET");
@@ -769,5 +822,199 @@ describe("step 18 on its own (--step test)", { timeout: SLOW }, () => {
     expect(r.code).toBe(0);
     expect(dms).toHaveLength(0);
     expect(r.out).toContain("Not sent.");
+  });
+});
+
+describe("step 1, the Cloudflare account (the parts after the browser)", { timeout: SLOW }, () => {
+  it("shows only the account table, and says plainly when wrangler's sign-in is missing permissions", async () => {
+    // As wrangler 4 prints it, with the warning it adds when the token lacks a scope.
+    const whoami = [
+      "👋 You are logged in with an OAuth Token, associated with the email okky@example.com.",
+      "┌─────────────────┬──────────┐",
+      "│ Account Name    │ Account ID │",
+      "├─────────────────┼──────────┤",
+      "│ Example Pty Ltd │ 3f2a91c0 │",
+      "└─────────────────┴──────────┘",
+      "🔓 Token Permissions:",
+      "Scope (Access)",
+      "- account (read)",
+      "- user (read)",
+      "",
+      "▲ [WARNING] Wrangler is missing some expected Oauth scopes. To fix this, run `wrangler login` to refresh your token. The missing scopes are:",
+      "  - containers (write)",
+      "",
+    ].join("\n");
+    const cf = fakeWrangler({ whoami });
+    const r = await run([], "\ny\nn\n", tempEnv(), cf.env);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("│ Example Pty Ltd │ 3f2a91c0 │");
+    expect(r.out).not.toContain("- account (read)");
+    expect(r.out).not.toContain("containers");
+    expect(r.out).toContain("missing some permissions: npx wrangler login refreshes them.");
+    rmSync(cf.dir, { recursive: true });
+  });
+});
+
+describe("step 18's picker, with more than one owner", { timeout: SLOW }, () => {
+  it("Enter with nothing typed asks for part of a name", async () => {
+    const before = USERS;
+    USERS = [...USERS, { userId: 7, firstName: "Second", lastName: "Owner", userType: "owner", isArchived: false, customFields: [] }];
+    const env = envWithKey(
+      "COMPLIANCE_FORM_ID='501'\nWHERE_TO_FIND='x'\nGRACE_PERIOD_MINUTES='30'\nESCALATION_DELAY_MINUTES='90'\nQUIET_HOURS_ENABLED='false'\nTIME_ZONE='Australia/Perth'\nREMINDER_TASK_ENABLED='false'\nCT_PUBLISHER_ID='2480518'\nCT_PUBLISHER_NAME='P'\nALERTS_CHANNEL_ID='chat-12'\n",
+    );
+    const r = await run(["--step", "test"], "\njordan\nn\n", env);
+    USERS = before;
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("Type part of a name.");
+    expect(r.out).not.toContain('No one matches ""');
+  });
+});
+
+/** A Deployment that's on: every setting saved, the database made, the Worker deployed. */
+const RUNNING = [
+  "CT_API_KEY='ct-key-saved'", "D1_DATABASE_ID='11111111-2222-3333-4444-555555555555'", "CT_WEBHOOK_SECRET='hook-secret-abc'",
+  "TIME_ZONE='Australia/Melbourne'", "COMPLIANCE_FORM_ID='501'", "SHIFT_DATE_QUESTION_ID='q-shift'", "WHERE_TO_FIND='the red folder'",
+  "GRACE_PERIOD_MINUTES='30'", "ESCALATION_DELAY_MINUTES='240'", "QUIET_HOURS_ENABLED='true'", "QUIET_HOURS_FROM='21:00'",
+  "QUIET_HOURS_UNTIL='07:00'", "EXCLUDED_ADMIN_IDS=''", "REMINDER_TASK_ENABLED='true'", "TASK_BOARD_ID='701'",
+  "CT_PUBLISHER_ID='2480518'", "CT_PUBLISHER_NAME='Compliance Reminders (Automated)'", "ALERTS_CHANNEL_ID='chat-12'",
+].join("\n") + "\n";
+const running = () => {
+  const env = tempEnv();
+  writeFileSync(env, RUNNING, { mode: 0o600 });
+  return env;
+};
+const COUNTS = { needs_form: 12, scheduled: 3, not_escalated: 9, held: 0, tasks_open: 2, alerts_open: 0 };
+const WORKER = "https://clock-out-form-reminder.test.workers.dev/webhook";
+
+describe("rerunning a step on a running Deployment (--step, #41)", { timeout: SLOW }, () => {
+  beforeEach(() => {
+    answers = [{ status: 200, dayLimit: 20_000 }];
+    webhookCalls.length = 0;
+  });
+
+  it("a form switch shows what it affects, read from D1, then deploys and moves the form webhook", async () => {
+    webhooks = [
+      { id: 1, name: "Someone else's", url: "https://other.example/hook", featureType: "users" },
+      { id: 11, url: WORKER, featureType: "time_activity" },
+      { id: 12, url: WORKER, featureType: "forms", entityId: "501" },
+      { id: 13, url: WORKER, featureType: "tasks", entityId: "701" },
+    ];
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
+    const env = running();
+    // Form 3 (once per person: use it anyway), no date question in it, Enter keeps the place; apply.
+    const r = await run(["--step", "form"], "3\ny\n\ny\n", env, cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("What this changes");
+    expect(flat(r.out)).toContain("12 Shifts are in progress. They'll accept either form; Shifts from now on need the new one.");
+    expect(flat(r.out)).toContain("Submissions from now on count by time");
+    const calls = cf.log();
+    expect(calls).toMatch(/wrangler d1 execute clock-out-form-reminder --remote --json --config \S+ --command SELECT/);
+    expect(calls.indexOf("d1 execute")).toBeLessThan(calls.indexOf("wrangler deploy --config"));
+    expect(JSON.parse(readFileSync(cf.env.WIZARD_DEPLOY_CONFIG!, "utf8")).vars.COMPLIANCE_FORM_ID).toBe("503");
+    expect(webhooks.find((w) => w.id === 12)?.entityId).toBe("503");
+    expect(webhooks.find((w) => w.id === 1)?.name).toBe("Someone else's");
+    expect(calls).not.toContain("secret put");
+    expect(r.out).toContain("Applied.");
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("answering n puts .dev.vars back and deploys nothing", async () => {
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
+    const env = running();
+    const r = await run(["--step", "timings"], "45\n\nn\n", env, cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(flat(r.out)).toContain("3 Shifts are waiting for a reminder or escalation already scheduled. Those keep their times.");
+    expect(r.out).toContain(`Not applied.`);
+    expect(readFileSync(env, "utf8")).toBe(RUNNING);
+    expect(cf.log()).not.toMatch(/wrangler deploy --config/);
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("nothing changed: nothing to apply, and Cloudflare isn't touched", async () => {
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
+    const r = await run(["--step", "quiet-hours"], "\n\n\n", running(), cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("Nothing changed, so there's nothing to apply.");
+    expect(cf.log()).toBe("");
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("a new key is stored on Cloudflare after the deploy; the preview goes without counts when D1 can't be read", async () => {
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555" });
+    const r = await run(["--step", "key"], "ct-key-new\ny\n", running(), cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("Couldn't read what's in progress from the database, so no counts.");
+    expect(r.out).toContain("The new key is used from the next check, within a minute.");
+    expect(r.out).not.toContain("ct-key-new");
+    const calls = cf.log();
+    expect(calls.indexOf("wrangler deploy --config")).toBeLessThan(calls.indexOf("secret put CT_API_KEY"));
+    expect(calls).toContain("secret CT_API_KEY=ct-key-new");
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("--step support adds the link on a running Deployment and stores its secret", async () => {
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
+    const r = await run(["--step", "support"], "y\nhttps://relay.example.workers.dev\nacme\nrelay-secret-9\ny\n", running(), cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("Problems are also sent to your integrator from now on");
+    expect(cf.log()).toContain("secret INTEGRATOR_RELAY_SECRET=relay-secret-9");
+    expect(JSON.parse(readFileSync(cf.env.WIZARD_DEPLOY_CONFIG!, "utf8")).vars.INTEGRATOR_RELAY_URL).toBe("https://relay.example.workers.dev");
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("before the reminder is turned on, a rerun only saves", async () => {
+    const cf = fakeWrangler();
+    const env = envWithKey();
+    const r = await run(["--step", "quiet-hours"], "n\n", env, cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("It goes live when you finish setup: npm run setup");
+    expect(saved(env).QUIET_HOURS_ENABLED).toBe("false");
+    expect(cf.log()).toBe("");
+    rmSync(cf.dir, { recursive: true });
+  });
+});
+
+describe("rerunning the webhooks (--step webhook)", { timeout: SLOW }, () => {
+  beforeEach(() => {
+    answers = [{ status: 200, dayLimit: 20_000 }];
+    webhookCalls.length = 0;
+  });
+
+  it("shows what changes in Connecteam, then replaces only this Deployment's own subscriptions", async () => {
+    webhooks = [
+      { id: 1, name: "Someone else's", url: "https://other.example/hook", featureType: "forms", entityId: "501" },
+      { id: 11, url: WORKER, featureType: "time_activity" },
+      { id: 12, url: WORKER, featureType: "forms", entityId: "501" },
+      { id: 14, url: WORKER, featureType: "forms", entityId: "501" },
+    ];
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555" });
+    const env = running();
+    const r = await run(["--step", "webhook"], "y\n", env, cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("Update: time_activity (id 11)");
+    expect(r.out).toContain("Update: forms (id 12)");
+    expect(r.out).toContain("Add: tasks");
+    expect(r.out).toContain("Remove: extra webhook (id 14)");
+    expect(r.out).toContain("Left alone: 1 other webhook on your account");
+    expect(webhookCalls).toEqual(["PUT 11", "PUT 12", "POST tasks", "DELETE 14"]);
+    expect(webhooks.find((w) => w.id === 1)).toEqual({ id: 1, name: "Someone else's", url: "https://other.example/hook", featureType: "forms", entityId: "501" });
+    expect(readFileSync(env, "utf8")).toBe(RUNNING);
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("changes nothing in Connecteam when told not to", async () => {
+    webhooks = [{ id: 11, url: WORKER, featureType: "time_activity" }];
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555" });
+    const r = await run(["--step", "webhook"], "n\n", running(), cf.env);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain("Nothing changed in Connecteam.");
+    expect(webhookCalls).toEqual([]);
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("stops before the reminder is turned on", async () => {
+    const r = await run(["--step", "webhook"], "", envWithKey());
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("The reminder isn't on yet. Turn it on first: npm run setup");
   });
 });
