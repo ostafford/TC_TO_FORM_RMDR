@@ -53,7 +53,7 @@ describe("impactLines", () => {
 
   it("recipients are read at send time, so Shifts not escalated yet go to the new list", () => {
     expect(lines(["EXCLUDED_ADMIN_IDS"], {}, counts({ notEscalated: 5 }))[0]).toBe(
-      "5 Shifts are not escalated yet. If they are, their escalations go to the new list of admins, plus the employee's direct manager.",
+      "5 Shifts are not escalated yet. If they are, their escalations go to every admin except the ones now excluded, plus the employee's direct manager.",
     );
   });
 
@@ -74,6 +74,13 @@ describe("impactLines", () => {
     expect(lines(["ALERTS_CHANNEL_ID"], {}, counts({ alertsOpen: 1 }))).toEqual(["1 problem is being reported now. Updates on it go to the new chat."]);
     expect(lines(["INTEGRATOR_RELAY_URL"], { INTEGRATOR_RELAY_URL: "https://r.example" })[0]).toMatch(/^Problems are also sent to your integrator/);
     expect(lines(["INTEGRATOR_RELAY_URL"], { INTEGRATOR_RELAY_URL: "" }, counts(), { INTEGRATOR_RELAY_URL: "https://r.example" })[0]).toMatch(/^Problems are no longer sent/);
+  });
+
+  it("a time zone change: quiet hours, shift times in messages, and dated answers without a zone", () => {
+    const l = lines(["TIME_ZONE"], { TIME_ZONE: "Australia/Perth" });
+    expect(l[0]).toBe("Quiet hours follow the clock in Australia/Perth from the next check.");
+    expect(l[1]).toMatch(/^Shift times in messages still show the zone each Shift was recorded in/);
+    expect(l[2]).toBe("A date question answer that comes without a time zone is read in the new zone.");
   });
 
   it("without counts, says what changes without numbers", () => {

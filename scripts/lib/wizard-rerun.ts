@@ -69,20 +69,25 @@ export function changedKeys(before: Record<string, string>, after: Record<string
   return keys.filter((k) => (before[k] ?? "").trim() !== (after[k] ?? "").trim());
 }
 
-const shifts = (n: number) => (n === 1 ? "1 Shift is" : `${n} Shifts are`);
+/** "1 Shift is" / "12 Shifts are": a count with its noun and verb agreeing. */
+const count = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
+const shifts = (n: number) => count(n, "Shift is", "Shifts are");
 const changed = (keys: string[], ...of: string[]) => of.some((k) => keys.includes(k));
 
 /**
  * What changing `keys` (from `before` to `after`) affects, one plain line
- * each. `counts` is `null` when the database couldn't be read: the lines then
+ * each. `c`, the counts, is `null` when the database couldn't be read: the lines then
  * say what changes without the numbers.
  */
-export function impactLines(keys: string[], before: Record<string, string>, after: Record<string, string>, counts: Counts | null): string[] {
+export function impactLines(keys: string[], before: Record<string, string>, after: Record<string, string>, c: Counts | null): string[] {
   const lines: string[] = [];
-  const c = counts;
   if (changed(keys, "CT_API_KEY")) lines.push("The new key is used from the next check, within a minute.");
   if (changed(keys, "TIME_ZONE")) {
-    lines.push(`Quiet hours follow the clock in ${after.TIME_ZONE} from the next check.`);
+    lines.push(
+      `Quiet hours follow the clock in ${after.TIME_ZONE} from the next check.`,
+      "Shift times in messages still show the zone each Shift was recorded in, with its name added when that isn't the new zone.",
+      "A date question answer that comes without a time zone is read in the new zone.",
+    );
   }
   if (changed(keys, "COMPLIANCE_FORM_ID")) {
     if (!c) lines.push("Shifts in progress will accept either form; Shifts from now on need the new one.");
@@ -92,7 +97,7 @@ export function impactLines(keys: string[], before: Record<string, string>, afte
   if (changed(keys, "SHIFT_DATE_QUESTION_ID")) {
     lines.push(
       after.SHIFT_DATE_QUESTION_ID?.trim()
-        ? "Submissions from now on count for the shift their date question names."
+        ? "Submissions from now on count for the Shift their date question names."
         : "Submissions from now on count by time: the shift they're made during or just after.",
     );
   }
@@ -106,14 +111,14 @@ export function impactLines(keys: string[], before: Record<string, string>, afte
     const off = after.QUIET_HOURS_ENABLED === "false";
     const held = c?.held ?? 0;
     if (held > 0) {
-      const them = held === 1 ? "1 escalation is held for quiet hours. It goes out" : `${held} escalations are held for quiet hours. They go out`;
+      const them = `${count(held, "escalation is", "escalations are")} held for quiet hours. ${held === 1 ? "It goes" : "They go"} out`;
       lines.push(off ? `${them} at the next check.` : `${them} when the new quiet hours end, or at the next check if it isn't quiet then.`);
     } else if (changed(keys, "QUIET_HOURS_ENABLED", "QUIET_HOURS_FROM", "QUIET_HOURS_UNTIL")) {
       lines.push(off ? "Escalations from now on go out at any hour." : "Escalations from now on follow the new quiet hours.");
     }
   }
   if (changed(keys, "EXCLUDED_ADMIN_IDS")) {
-    const rest = "go to the new list of admins, plus the employee's direct manager.";
+    const rest = "go to every admin except the ones now excluded, plus the employee's direct manager.";
     if (!c || c.notEscalated === 0) lines.push(`Escalations from now on ${rest}`);
     else lines.push(`${shifts(c.notEscalated)} not escalated yet. If they are, their escalations ${rest}`);
   }
@@ -122,19 +127,19 @@ export function impactLines(keys: string[], before: Record<string, string>, afte
     lines.push(on ? (changed(keys, "TASK_BOARD_ID") ? "New reminder tasks go on the new board." : "Reminder tasks are made from the next reminder on.") : "No new reminder tasks from now on.");
     const open = c?.tasksOpen ?? 0;
     if (open > 0) {
-      const them = open === 1 ? "1 reminder task is open. It still ticks itself off" : `${open} reminder tasks are open. They still tick themselves off`;
+      const them = `${count(open, "reminder task is", "reminder tasks are")} open. ${open === 1 ? "It still ticks itself" : "They still tick themselves"} off`;
       const board = changed(keys, "TASK_BOARD_ID") && before.TASK_BOARD_ID?.trim() ? ", but a tick by hand on the old board is no longer noticed" : "";
       lines.push(`${them} when the form arrives${board}.`);
     }
   }
   if (changed(keys, "CT_PUBLISHER_ID", "CT_PUBLISHER_NAME")) {
     const n = c?.needsForm ?? 0;
-    const those = n === 1 ? ", including those for the 1 Shift in progress" : n > 1 ? `, including those for the ${n} Shifts in progress` : "";
+    const those = n > 0 ? `, including those for the ${count(n, "Shift", "Shifts")} in progress` : "";
     lines.push(`Messages from now on come from "${after.CT_PUBLISHER_NAME ?? ""}"${those}.`);
   }
   if (changed(keys, "ALERTS_CHANNEL_ID")) {
     const open = c?.alertsOpen ?? 0;
-    if (open > 0) lines.push(`${open === 1 ? "1 problem is" : `${open} problems are`} being reported now. Updates on ${open === 1 ? "it" : "them"} go to the new chat.`);
+    if (open > 0) lines.push(`${count(open, "problem is", "problems are")} being reported now. Updates on ${open === 1 ? "it" : "them"} go to the new chat.`);
     else lines.push("Problems from now on are posted in the new chat.");
   }
   if (changed(keys, "INTEGRATOR_RELAY_URL", "INTEGRATOR_CLIENT_SLUG", "INTEGRATOR_RELAY_SECRET")) {

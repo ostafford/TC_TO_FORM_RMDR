@@ -25,6 +25,8 @@
  *                     with --plan, changes nothing and says `update|create|remove
  *                     <tab> WHAT` for each, then `others <tab> COUNT` left alone
  *   changed BEFORE    each key that differs from the copy BEFORE, one a line
+ *   worker-url        the Worker's address, read from this Deployment's own
+ *                     webhook subscriptions (exit 1 when they don't say)
  *   impact BEFORE D1OUT   what changing .dev.vars from the file BEFORE affects,
  *                     one line each, with counts from D1OUT (a file holding
  *                     `wrangler d1 execute --json` output of impact-sql)
@@ -63,7 +65,7 @@ import { formatDuration } from "../src/messages/format.js";
 import type { ConnecteamUser, Conversation } from "../src/connecteam/types.js";
 import { readFileSync } from "node:fs";
 import { parseDevVars } from "./lib/deploy-config.js";
-import { planWebhooks, sampleShift, settingProblems, STEP_OF, summaryRow, wantedWebhooks, type ExistingWebhook } from "./lib/wizard-turn-on.js";
+import { planWebhooks, sampleShift, settingProblems, STEP_OF, summaryRow, wantedWebhooks, WEBHOOK_NAME_PREFIX, type ExistingWebhook } from "./lib/wizard-turn-on.js";
 import { IMPACT_SQL, changedKeys, impactLines, parseCounts } from "./lib/wizard-rerun.js";
 import { reminderShiftEnded } from "../src/messages/reminder.js";
 import { fullName } from "./lib/wizard-people.js";
@@ -266,6 +268,21 @@ async function listWebhooks(): Promise<ExistingWebhook[]> {
   return allPages("/settings/v1/webhooks", SMALL_PAGE, (b) => (b as { data?: { webhooks?: ExistingWebhook[] } }).data?.webhooks);
 }
 
+/**
+ * The Worker's address, without deploying (#41): the one URL this
+ * Deployment's subscriptions share, found by the names "Turn it on" gives
+ * them (wantedWebhooks).
+ */
+async function workerUrl(): Promise<string[]> {
+  const urls = new Set(
+    (await listWebhooks())
+      .filter((w) => String(w.name ?? "").startsWith(WEBHOOK_NAME_PREFIX) && typeof w.url === "string")
+      .map((w) => w.url!.replace(/\/webhook$/, "")),
+  );
+  if (urls.size !== 1) throw new Stop(1, urls.size === 0 ? "No webhooks of this reminder's in Connecteam." : "This reminder's webhooks point at more than one address.");
+  return [...urls];
+}
+
 async function webhooks(target: string, dryRun: boolean): Promise<string[]> {
   if (!/^https:\/\//.test(target)) throw new Stop(1, `"${target}" isn't the Worker's https:// address.`);
   const v = devVars();
@@ -339,7 +356,7 @@ async function testMessage(userId: string): Promise<string[]> {
 }
 
 /** .dev.vars as it was before a step, from a copy (none: it didn't exist yet). */
-function before(path: string): Record<string, string> {
+function devVarsCopy(path: string): Record<string, string> {
   try {
     return parseDevVars(readFileSync(path, "utf8"));
   } catch {
@@ -349,7 +366,7 @@ function before(path: string): Record<string, string> {
 
 /** What changing .dev.vars from `beforePath` affects (./lib/wizard-rerun.ts). */
 function impact(beforePath: string, d1Path: string): string[] {
-  const was = before(beforePath);
+  const was = devVarsCopy(beforePath);
   const after = devVars();
   let d1 = "";
   try {
@@ -426,7 +443,9 @@ async function main(args: string[]): Promise<string[]> {
     case "impact":
       return impact(rest[0] ?? "", rest[1] ?? "");
     case "changed":
-      return changedKeys(before(rest[0] ?? ""), devVars());
+      return changedKeys(devVarsCopy(rest[0] ?? ""), devVars());
+    case "worker-url":
+      return workerUrl();
     case "impact-sql":
       return [IMPACT_SQL];
     case "test-message":

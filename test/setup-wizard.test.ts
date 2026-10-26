@@ -200,6 +200,33 @@ function run(args: string[], input = "", envFile?: string, extraEnv: Record<stri
   });
 }
 
+/**
+ * Run the wizard, typing `input` and keeping stdin open, and press Ctrl-C
+ * (SIGINT) once the output shows `at`.
+ */
+function interrupt(args: string[], input: string, at: string, envFile: string, extraEnv: Record<string, string>): Promise<{ code: number | null; out: string }> {
+  const { CT_API_KEY: _, ...parent } = process.env;
+  return new Promise((resolve) => {
+    const child = spawn("bash", [SCRIPT, ...args], {
+      cwd: root,
+      env: { ...parent, NO_COLOR: "1", WIZARD_NO_BROWSER: "1", WIZARD_LOG: "off", WIZARD_DETAILS: join(tmpdir(), "wizard-test-wrangler.log"), CT_API_BASE: base, WIZARD_ENV_FILE: envFile, ...extraEnv },
+    });
+    let out = "";
+    let sent = false;
+    const seen = (d: Buffer) => {
+      out += d;
+      if (!sent && out.includes(at)) {
+        sent = true;
+        child.kill("SIGINT");
+      }
+    };
+    child.stdout.on("data", seen);
+    child.stderr.on("data", seen);
+    child.on("close", (code) => resolve({ code, out }));
+    child.stdin.write(input);
+  });
+}
+
 const tempEnv = () => join(mkdtempSync(join(tmpdir(), "wizard-")), ".dev.vars");
 
 /** A `.dev.vars` with a working key already saved, as after step 2. */
@@ -930,6 +957,17 @@ describe("rerunning a step on a running Deployment (--step, #41)", { timeout: SL
     rmSync(cf.dir, { recursive: true });
   });
 
+  it("Ctrl-C at the question puts .dev.vars back and deploys nothing", async () => {
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
+    const env = running();
+    const r = await interrupt(["--step", "timings"], "45\n\n", "Apply it now?", env, cf.env);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("Not applied.");
+    expect(readFileSync(env, "utf8")).toBe(RUNNING);
+    expect(cf.log()).not.toMatch(/wrangler deploy --config/);
+    rmSync(cf.dir, { recursive: true });
+  });
+
   it("nothing changed: nothing to apply, and Cloudflare isn't touched", async () => {
     const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS });
     const r = await run(["--step", "quiet-hours"], "\n\n\n", running(), cf.env);
@@ -983,14 +1021,17 @@ describe("rerunning the webhooks (--step webhook)", { timeout: SLOW }, () => {
   it("shows what changes in Connecteam, then replaces only this Deployment's own subscriptions", async () => {
     webhooks = [
       { id: 1, name: "Someone else's", url: "https://other.example/hook", featureType: "forms", entityId: "501" },
-      { id: 11, url: WORKER, featureType: "time_activity" },
-      { id: 12, url: WORKER, featureType: "forms", entityId: "501" },
-      { id: 14, url: WORKER, featureType: "forms", entityId: "501" },
+      { id: 11, name: "Clock-out Form Reminder: clock-outs", url: WORKER, featureType: "time_activity" },
+      { id: 12, name: "Clock-out Form Reminder: form submissions", url: WORKER, featureType: "forms", entityId: "501" },
+      { id: 14, name: "Clock-out Form Reminder: form submissions", url: WORKER, featureType: "forms", entityId: "501" },
     ];
     const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555" });
     const env = running();
     const r = await run(["--step", "webhook"], "y\n", env, cf.env);
     expect(r.code, r.out).toBe(0);
+    // The address came from the webhooks themselves: nothing deployed.
+    expect(r.out).toContain("This reminder is at https://clock-out-form-reminder.test.workers.dev.");
+    expect(cf.log()).toBe("");
     expect(r.out).toContain("Update: time_activity (id 11)");
     expect(r.out).toContain("Update: forms (id 12)");
     expect(r.out).toContain("Add: tasks");
@@ -1002,8 +1043,23 @@ describe("rerunning the webhooks (--step webhook)", { timeout: SLOW }, () => {
     rmSync(cf.dir, { recursive: true });
   });
 
+  it("with none of its webhooks left, asks before deploying to read its address", async () => {
+    webhooks = [{ id: 1, name: "Someone else's", url: "https://other.example/hook", featureType: "forms" }];
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555" });
+    const no = await run(["--step", "webhook"], "n\n", running(), cf.env);
+    expect(no.code, no.out).toBe(0);
+    expect(no.out).toContain("No webhooks of this reminder's in Connecteam.");
+    expect(cf.log()).not.toMatch(/wrangler deploy --config/);
+    expect(webhookCalls).toEqual([]);
+    const yes = await run(["--step", "webhook"], "y\ny\n", running(), cf.env);
+    expect(yes.code, yes.out).toBe(0);
+    expect(cf.log()).toMatch(/wrangler deploy --config/);
+    expect(webhookCalls).toEqual(["POST time_activity", "POST forms", "POST tasks"]);
+    rmSync(cf.dir, { recursive: true });
+  });
+
   it("changes nothing in Connecteam when told not to", async () => {
-    webhooks = [{ id: 11, url: WORKER, featureType: "time_activity" }];
+    webhooks = [{ id: 11, name: "Clock-out Form Reminder: clock-outs", url: WORKER, featureType: "time_activity" }];
     const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555" });
     const r = await run(["--step", "webhook"], "n\n", running(), cf.env);
     expect(r.code, r.out).toBe(0);

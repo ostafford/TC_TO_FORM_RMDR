@@ -1171,18 +1171,29 @@ s_webhook() {
       "tasks through three webhook subscriptions. This puts back exactly those" \
       "three, for this reminder's address only. Other integrations' webhooks on" \
       "your account are never touched."
-  todo "Wait while it redeploys the reminder as it is, to read its address. No setting changes." \
-       "Check what will change in Connecteam, then answer y."
+  todo "Check what will change in Connecteam, then answer y." \
+       "If Connecteam no longer has any of this reminder's webhooks, it asks first, then redeploys the reminder as it is to read its address."
   example "Update: forms (id 5012)" \
           "Left alone: 2 other webhooks on your account"
   need_key
   [[ -n "$(_existing D1_DATABASE_ID || true)" ]] || { fail "The reminder isn't on yet. Turn it on first: npm run setup"; exit 1; }
   printf '\n'
-  check_config || exit 1
-  deploy_worker
-  need_worker_url
-  ok "Deployed: $WORKER_URL"
   local rc=0 what line
+  # Its address from its own webhooks, so nothing is deployed unasked (#41).
+  helper worker-url || rc=$?
+  if (( rc == 0 )); then
+    WORKER_URL="$HELPER_OUT"
+    ok "This reminder is at $WORKER_URL."
+  else
+    (( rc == 1 )) || { fail "$HELPER_OUT"; exit 1; }
+    note "$HELPER_OUT Its address comes from a deploy instead."
+    check_config || exit 1
+    confirm "Deploy the reminder as it is now, to read its address?" || { note "Nothing changed."; return 0; }
+    deploy_worker
+    need_worker_url
+    ok "Deployed: $WORKER_URL"
+  fi
+  rc=0
   helper webhooks "$WORKER_URL/webhook" --plan || rc=$?
   (( rc == 0 )) || { fail "$HELPER_OUT"; exit 1; }
   printf '\n  %sWhat this changes%s\n' "$BOLD" "$RESET"
@@ -1252,8 +1263,9 @@ apply_rerun() {
   helper changed "$before" || { fail "$HELPER_OUT"; exit 1; }
   keys=$'\n'"$HELPER_OUT"$'\n'
   printf '\n'
-  if [[ -z "${HELPER_OUT//[[:space:]]/}" ]]; then ok "Nothing changed, so there's nothing to apply."; return 0; fi
+  if [[ -z "${HELPER_OUT//[[:space:]]/}" ]]; then RERUN_KEEP=1; ok "Nothing changed, so there's nothing to apply."; return 0; fi
   if [[ -z "$(_existing D1_DATABASE_ID || true)" ]]; then
+    RERUN_KEEP=1
     note "Saved to $ENV_FILE. It goes live when you finish setup: npm run setup"
     return 0
   fi
@@ -1263,7 +1275,7 @@ apply_rerun() {
     exit 1
   fi
   d1=$(mktemp)
-  helper impact-sql
+  helper impact-sql || { fail "$HELPER_OUT"; exit 1; }
   if wr_quiet d1 execute "$DB_NAME" --remote --json --config "$DEPLOY_CONFIG" --command "$HELPER_OUT"; then
     printf '%s' "$WR_OUT" > "$d1"
   fi
@@ -1278,6 +1290,8 @@ apply_rerun() {
   fi
   migrate
   deploy_worker
+  # Live now: keep it, even if a step below fails.
+  RERUN_KEEP=1
   [[ "$keys" != *$'\nCT_API_KEY\n'* ]] || put_secret CT_API_KEY "$(_existing CT_API_KEY)" "the API key"
   if [[ "$keys" == *$'\nINTEGRATOR_RELAY_SECRET\n'* && -n "$(_existing INTEGRATOR_RELAY_SECRET || true)" ]]; then
     put_secret INTEGRATOR_RELAY_SECRET "$(_existing INTEGRATOR_RELAY_SECRET)" "the support link's secret"
@@ -1292,8 +1306,22 @@ apply_rerun() {
 # restore_env BEFORE: put .dev.vars back as the copy BEFORE has it.
 restore_env() {
   if [[ -f "$1" ]]; then cat "$1" > "$ENV_FILE"; else rm -f "$ENV_FILE"; fi
+  RERUN_KEEP=1
   WRITTEN_ENV=()
   warn "Not applied. $ENV_FILE is back as it was."
+}
+
+# end_rerun: on any exit (Ctrl-C included), a change not yet live goes back,
+# so nothing reaches the Worker without a yes; then the copy is removed.
+RERUN_KEEP=""
+end_rerun() {
+  if [[ -z "$RERUN_KEEP" ]]; then
+    # Said only when there's something to put back.
+    if [[ -f "$RERUN_BEFORE" ]] && cmp -s "$RERUN_BEFORE" "$ENV_FILE"; then :
+    elif [[ ! -f "$RERUN_BEFORE" && ! -f "$ENV_FILE" ]]; then :
+    else printf '\n'; restore_env "$RERUN_BEFORE"; fi
+  fi
+  rm -f "$RERUN_BEFORE"
 }
 
 # Each step by --step name, and how many stages it shows.
@@ -1384,10 +1412,13 @@ if [[ -n "$ONLY" ]]; then
   # A copy of .dev.vars as it was (it holds keys: mktemp makes it 0600), to
   # compare with and to put back if the change isn't applied.
   RERUN_BEFORE=$(mktemp)
-  trap 'rm -f "$RERUN_BEFORE"' EXIT
   if [[ -f "$ENV_FILE" ]]; then cat "$ENV_FILE" > "$RERUN_BEFORE"; else rm -f "$RERUN_BEFORE"; fi
+  # test and webhook change no setting.
+  case "$ONLY" in test | webhook) RERUN_KEEP=1 ;; esac
+  trap end_rerun EXIT
+  trap 'exit 130' INT
   run_step "$ONLY"
-  case "$ONLY" in test | webhook) ;; *) apply_rerun "$RERUN_BEFORE" ;; esac
+  [[ -n "$RERUN_KEEP" ]] || apply_rerun "$RERUN_BEFORE"
   finish
   return
 fi
