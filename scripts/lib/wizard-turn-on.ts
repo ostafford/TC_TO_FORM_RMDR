@@ -55,6 +55,7 @@ export interface WebhookBody {
 /** A subscription as `GET /settings/v1/webhooks` lists it: the fields read here. */
 export interface ExistingWebhook {
   id: number | string;
+  name?: string;
   url?: string;
   featureType?: string;
 }
@@ -66,14 +67,17 @@ export interface ExistingWebhook {
  * even with the Reminder Task off, so tasks already made finish their
  * lifecycle (#19, user story 56).
  */
+/** Every subscription "Turn it on" makes is named starting with this. */
+export const WEBHOOK_NAME_PREFIX = "Clock-out Form Reminder: ";
+
 export function wantedWebhooks(url: string, secret: string, v: Record<string, string>): WebhookBody[] {
   const base = { url, secretKey: secret, isDisabled: false as const };
   const out: WebhookBody[] = [
-    { ...base, name: "Clock-out Form Reminder: clock-outs", featureType: "time_activity", entityId: null, eventTypes: [...TIME_ACTIVITY_EVENTS] },
-    { ...base, name: "Clock-out Form Reminder: form submissions", featureType: "forms", entityId: v.COMPLIANCE_FORM_ID?.trim() ?? "", eventTypes: ["form_submission"] },
+    { ...base, name: `${WEBHOOK_NAME_PREFIX}clock-outs`, featureType: "time_activity", entityId: null, eventTypes: [...TIME_ACTIVITY_EVENTS] },
+    { ...base, name: `${WEBHOOK_NAME_PREFIX}form submissions`, featureType: "forms", entityId: v.COMPLIANCE_FORM_ID?.trim() ?? "", eventTypes: ["form_submission"] },
   ];
   const board = v.TASK_BOARD_ID?.trim();
-  if (board) out.push({ ...base, name: "Clock-out Form Reminder: ticked tasks", featureType: "tasks", entityId: board, eventTypes: ["task_completed"] });
+  if (board) out.push({ ...base, name: `${WEBHOOK_NAME_PREFIX}ticked tasks`, featureType: "tasks", entityId: board, eventTypes: ["task_completed"] });
   return out;
 }
 
@@ -130,8 +134,8 @@ export const STEP_OF: Record<string, string> = {
   CT_PUBLISHER_ID: "sender",
   CT_PUBLISHER_NAME: "sender",
   ALERTS_CHANNEL_ID: "alerts",
-  INTEGRATOR_RELAY_URL: "alerts",
-  INTEGRATOR_CLIENT_SLUG: "alerts",
+  INTEGRATOR_RELAY_URL: "support",
+  INTEGRATOR_CLIENT_SLUG: "support",
 };
 
 /** "Time zone ............ Australia/Sydney": one summary row, the dots lining the values up. */

@@ -9,8 +9,9 @@ time zone, Compliance Form, Shift Date Question, "where to find it" phrase,
 Grace Period, escalation delay and Quiet Hours (#38), and the escalation
 recipients, Reminder Task, sender, Alerts Channel, support link and the
 Shift Entry tip (#39), then the settings summary, "Turn it on" and the test
-message (#40). Rerunning a step with an impact preview, and the `webhook`
-step, arrive with #41.
+message (#40), and rerunning one step (#41). The support link is asked only
+with `npm run setup -- --support`, or when one is already saved: clients
+never have a link of their own, so a client running setup alone isn't asked.
 
 ## Deploying
 
@@ -92,13 +93,22 @@ with `"secretKey": "<CT_WEBHOOK_SECRET>"` and `"isDisabled": false`, created wit
 
 **Register once.** A second `POST` adds a second subscription and every event
 arrives twice. To change one, `PUT /settings/v1/webhooks/<id>` with the same
-body. A rerun of the wizard does that: it updates the subscriptions whose
-`url` is this Worker's, adds any missing, and removes repeats. It never
-touches another integration's.
+body. A rerun of the wizard does that (`npm run setup -- --step webhook`
+does only that, after listing what it will change): it updates the
+subscriptions whose `url` is this Worker's, adds any missing, and removes
+repeats. It never touches another integration's.
 
 ### Updating
 
-Change the value in `.dev.vars` (or rerun the wizard's step), then:
+Rerun the wizard's step: `npm run setup -- --step NAME` (see `--help`). It
+saves the new value, then says what the change affects, counted from the
+live database (Shifts in progress, escalations held, open Reminder Tasks),
+and asks before applying it. On a yes it runs the checking deploy below,
+stores a changed key or relay secret on the Worker, and moves the form or
+task board webhook when that changed. On a no, `.dev.vars` goes back as it
+was.
+
+By hand: change the value in `.dev.vars`, then:
 
 ```bash
 npm run db:migrate
