@@ -4,8 +4,7 @@
  * (the tracked wrangler.jsonc stays a blank template).
  */
 import type { CreditRules } from "./crediting/choose.js";
-import { parseClock, type QuietHours } from "./escalation/quietHours.js";
-import type { RelaySettings } from "./relay/send.js";
+import { QUIET_HOURS, type QuietHours } from "./escalation/quietHours.js";
 
 export interface Env {
   DB: D1Database;
@@ -29,17 +28,10 @@ export interface Env {
   REMINDER_TASK_ENABLED?: string;
   /** Needed when REMINDER_TASK_ENABLED is "true". */
   TASK_BOARD_ID?: string;
-  /** "true" or "false"; blank reads as off. FROM and UNTIL ("21:00") are needed when it's "true" (#29). */
+  /** "true" or "false"; blank reads as off. On is 9 pm to 7 am (#29). */
   QUIET_HOURS_ENABLED?: string;
-  QUIET_HOURS_FROM?: string;
-  QUIET_HOURS_UNTIL?: string;
   /** The chat channel Failure Alerts are posted to (#33). */
   ALERTS_CHANNEL_ID: string;
-  /** Optional, all three or none: the Integrator Relay (#36). */
-  INTEGRATOR_RELAY_URL?: string;
-  INTEGRATOR_CLIENT_SLUG?: string;
-  /** A secret. */
-  INTEGRATOR_RELAY_SECRET?: string;
 }
 
 export interface Settings {
@@ -61,12 +53,6 @@ export interface Settings {
   quietHours: QuietHours | null;
   /** The Alerts Channel's conversation id. */
   alertsChannelId: string;
-  /**
-   * Where Failure Alerts and check-ins also go (#36), or `null` when the
-   * Integrator Relay isn't set up. Not a problem when it isn't: a Deployment
-   * runs the same without it.
-   */
-  relay: RelaySettings | null;
 }
 
 /** The Deployment's settings, or the names of the ones that are missing or malformed. */
@@ -105,26 +91,11 @@ export function readSettings(env: Env): { ok: true; settings: Settings } | { ok:
     shiftDateQuestionId: String(env.SHIFT_DATE_QUESTION_ID ?? "").trim(),
     reminderTask: null,
     alertsChannelId: text("ALERTS_CHANNEL_ID"),
-    relay: null,
     quietHours: null,
   };
   const quietSwitch = String(env.QUIET_HOURS_ENABLED ?? "").trim();
   if (quietSwitch && quietSwitch !== "true" && quietSwitch !== "false") problems.push("QUIET_HOURS_ENABLED");
-  if (quietSwitch === "true") {
-    const clock = (name: "QUIET_HOURS_FROM" | "QUIET_HOURS_UNTIL") => {
-      const m = parseClock(String(env[name] ?? ""));
-      if (m === null) problems.push(name);
-      return m ?? 0;
-    };
-    settings.quietHours = { from: clock("QUIET_HOURS_FROM"), until: clock("QUIET_HOURS_UNTIL") };
-  }
-  const relay = {
-    url: String(env.INTEGRATOR_RELAY_URL ?? "").trim(),
-    clientSlug: String(env.INTEGRATOR_CLIENT_SLUG ?? "").trim(),
-    secret: String(env.INTEGRATOR_RELAY_SECRET ?? "").trim(),
-  };
-  // Half set up is off: missing pieces must never stop the Deployment itself.
-  if (relay.url && relay.clientSlug && relay.secret) settings.relay = relay;
+  if (quietSwitch === "true") settings.quietHours = QUIET_HOURS;
   const taskSwitch = String(env.REMINDER_TASK_ENABLED ?? "").trim();
   if (taskSwitch && taskSwitch !== "true" && taskSwitch !== "false") problems.push("REMINDER_TASK_ENABLED");
   if (taskSwitch === "true") settings.reminderTask = { boardId: text("TASK_BOARD_ID") };

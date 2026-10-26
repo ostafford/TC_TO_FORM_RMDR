@@ -7,11 +7,9 @@ equivalent and the reference for what the wizard does. So far the wizard
 covers the Cloudflare account and the Connecteam API key (#37), and the
 time zone, Compliance Form, Shift Date Question, "where to find it" phrase,
 Grace Period, escalation delay and Quiet Hours (#38), and the escalation
-recipients, Reminder Task, sender, Alerts Channel, support link and the
-Shift Entry tip (#39), then the settings summary, "Turn it on" and the test
-message (#40), and rerunning one step (#41). The support link is asked only
-with `npm run setup -- --support`, or when one is already saved: clients
-never have a link of their own, so a client running setup alone isn't asked.
+recipients, Reminder Task, sender, Alerts Channel and the Shift Entry tip
+(#39), then the settings summary, "Turn it on" and the test message (#40),
+and rerunning one step (#41).
 
 ## Deploying
 
@@ -59,10 +57,9 @@ npx wrangler d1 create clock-out-form-reminder
 npm run deploy:config -- --check-live
 npm run db:migrate
 
-# Secrets (INTEGRATOR_RELAY_SECRET only with the Integrator Relay)
+# Secrets
 npx wrangler secret put CT_API_KEY --config wrangler.deploy.json
 npx wrangler secret put CT_WEBHOOK_SECRET --config wrangler.deploy.json
-npx wrangler secret put INTEGRATOR_RELAY_SECRET --config wrangler.deploy.json
 
 # Verify, then deploy
 npm run typecheck && npm test
@@ -104,7 +101,7 @@ Rerun the wizard's step: `npm run setup -- --step NAME` (see `--help`). It
 saves the new value, then says what the change affects, counted from the
 live database (Shifts in progress, escalations held, open Reminder Tasks),
 and asks before applying it. On a yes it runs the checking deploy below,
-stores a changed key or relay secret on the Worker, and moves the form or
+stores a changed key on the Worker, and moves the form or
 task board webhook when that changed. On a no, `.dev.vars` goes back as it
 was.
 
@@ -113,6 +110,29 @@ By hand: change the value in `.dev.vars`, then:
 ```bash
 npm run db:migrate
 npm run deploy
+```
+
+### After the Integrator Relay was removed (#67)
+
+The support link and its relay are gone, and Quiet Hours are always 9 pm to
+7 am. A Deployment set up before that changes on its next deploy: the checking
+deploy lists `QUIET_HOURS_FROM`, `QUIET_HOURS_UNTIL` and any `INTEGRATOR_*`
+settings as removed, and custom quiet hours become 9 pm to 7 am. The old
+values left in `.dev.vars` are ignored; delete them when convenient.
+
+If a relay was ever deployed (`clock-out-form-reminder-relay`), it stops
+hearing from every Deployment and opens a "missed check-in" issue for each
+after 36 hours. Tear it down once, with its Durable Object:
+
+```bash
+npx wrangler delete clock-out-form-reminder-relay
+```
+
+Then close any issues it opened, and on each Deployment that had a support
+link, remove its leftover secret:
+
+```bash
+npx wrangler secret delete INTEGRATOR_RELAY_SECRET --config wrangler.deploy.json
 ```
 
 Reading the live database, e.g. for a backup:
@@ -180,9 +200,6 @@ the same Connecteam account is steps 1 to 4. **Removing for good** adds step 5.
      restart, keep it.
    - **Local files:** delete `.dev.vars` (it holds the keys and names the
      client's accounts), or the whole clone.
-   - **Integrator Relay:** tell the integrator, so they close this client's
-     open issues. The relay is hosted once for every Deployment and is
-     **never torn down with a Deployment**.
 
 **Leave these in Connecteam either way:** the Compliance Form, the custom
 publisher, the task board and the Alerts Channel. A restart reuses them, and

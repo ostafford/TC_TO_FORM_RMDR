@@ -125,8 +125,6 @@ export const STEP_OF: Record<string, string> = {
   GRACE_PERIOD_MINUTES: "timings",
   ESCALATION_DELAY_MINUTES: "timings",
   QUIET_HOURS_ENABLED: "quiet-hours",
-  QUIET_HOURS_FROM: "quiet-hours",
-  QUIET_HOURS_UNTIL: "quiet-hours",
   TIME_ZONE: "timezone",
   EXCLUDED_ADMIN_IDS: "recipients",
   REMINDER_TASK_ENABLED: "reminder-task",
@@ -134,8 +132,6 @@ export const STEP_OF: Record<string, string> = {
   CT_PUBLISHER_ID: "sender",
   CT_PUBLISHER_NAME: "sender",
   ALERTS_CHANNEL_ID: "alerts",
-  INTEGRATOR_RELAY_URL: "support",
-  INTEGRATOR_CLIENT_SLUG: "support",
 };
 
 /** "Time zone ............ Australia/Sydney": one summary row, the dots lining the values up. */

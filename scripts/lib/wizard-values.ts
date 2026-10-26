@@ -5,7 +5,7 @@
  * a terminal.
  */
 import { formatDuration } from "../../src/messages/format.js";
-import { parseClock } from "../../src/escalation/quietHours.js";
+import { inWindow, QUIET_HOURS } from "../../src/escalation/quietHours.js";
 
 /** The longest "where to find it" phrase a message shows in full (src/messages/reminder.ts caps it at 100). */
 export const MAX_WHERE = 100;
@@ -37,33 +37,11 @@ export function parseDuration(text: string, unit: "minutes" | "hours"): number |
   return total;
 }
 
-/** "9 pm", "9:30pm", "21:00", "7 am" -> "21:00" etc., or `null`. A bare hour is refused: "7" could be morning or evening. */
-export function parseClockInput(text: string): string | null {
-  const t = text.trim().toLowerCase().replace(/\./g, "");
-  const twelve = /^(\d{1,2})(?::([0-5]\d))?\s*(am|pm)$/.exec(t);
-  if (twelve) {
-    const h = Number(twelve[1]);
-    if (h < 1 || h > 12) return null;
-    const h24 = (h % 12) + (twelve[3] === "pm" ? 12 : 0);
-    return `${String(h24).padStart(2, "0")}:${twelve[2] ?? "00"}`;
-  }
-  const m = /^(\d{1,2}):([0-5]\d)$/.exec(t);
-  if (!m) return null;
-  const clock = `${m[1]!.padStart(2, "0")}:${m[2]}`;
-  return parseClock(clock) === null ? null : clock;
-}
-
 /** Minutes after midnight (any day) -> "9:00 pm". */
 export function clock12(minutes: number): string {
   const m = ((minutes % 1440) + 1440) % 1440;
   const h = Math.floor(m / 60);
   return `${h % 12 === 0 ? 12 : h % 12}:${String(m % 60).padStart(2, "0")} ${h < 12 ? "am" : "pm"}`;
-}
-
-/** "21:00" -> "9:00 pm". */
-export function clockLabel(hhmm: string): string {
-  const m = parseClock(hhmm);
-  return m === null ? hhmm : clock12(m);
 }
 
 /**
@@ -122,31 +100,19 @@ export function delayTimeline(graceMinutes: number, delayMinutes: number): strin
   ];
 }
 
-/** Quiet Hours as the wizard saves them: "HH:MM" each. */
-export interface QuietWindow {
-  from: string;
-  until: string;
-}
+/** Quiet Hours as every Deployment has them: "9:00 pm to 7:00 am". */
+export const QUIET_HOURS_LABEL = `${clock12(QUIET_HOURS.from)} to ${clock12(QUIET_HOURS.until)}`;
 
-/** Whether a minute of the day falls in the window (from > until runs across midnight; equal ends mean never), as src/escalation/quietHours.ts decides. */
-function inWindow(minutes: number, q: QuietWindow): boolean {
-  const from = parseClock(q.from) ?? 0;
-  const until = parseClock(q.until) ?? 0;
-  const m = ((minutes % 1440) + 1440) % 1440;
-  if (from === until) return false;
-  return from < until ? m >= from && m < until : m >= from || m < until;
-}
-
-/** The Quiet Hours example (#16): a Shift ending at 10 pm, with the chosen timings. `null` is Quiet Hours off. */
-export function quietExample(graceMinutes: number, delayMinutes: number, quiet: QuietWindow | null): string[] {
+/** The Quiet Hours example (#16): a Shift ending at 10 pm, with the chosen timings, with Quiet Hours on or off. */
+export function quietExample(graceMinutes: number, delayMinutes: number, on: boolean): string[] {
   const reminder = LATE_SHIFT_END + graceMinutes;
   const escalation = reminder + delayMinutes;
-  const outcome =
-    quiet === null
-      ? "escalation sent straight away (quiet hours off)"
-      : inWindow(escalation, quiet)
-        ? `escalation due → held until ${clockLabel(quiet.until)}, then sent in the morning summary`
-        : "escalation sent straight away (outside quiet hours)";
+  const quiet = inWindow(escalation, QUIET_HOURS);
+  const outcome = !on
+    ? "escalation sent straight away (quiet hours off)"
+    : quiet
+      ? `escalation due → held until ${clock12(QUIET_HOURS.until)}, then sent in the morning summary`
+      : "escalation sent straight away (outside quiet hours)";
   return [
     `A shift ends at ${clock12(LATE_SHIFT_END)}.`,
     row(reminder, "reminder to the employee (sent: reminders are never held)"),

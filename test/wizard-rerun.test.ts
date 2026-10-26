@@ -43,10 +43,11 @@ describe("impactLines", () => {
     ]);
   });
 
-  it("quiet hours: held escalations go out when the new ones end, or at once when turned off", () => {
-    expect(lines(["QUIET_HOURS_FROM"], { QUIET_HOURS_ENABLED: "true" }, counts({ held: 2 }))[0]).toBe(
-      "2 escalations are held for quiet hours. They go out when the new quiet hours end, or at the next check if it isn't quiet then.",
+  it("quiet hours: held escalations go out at 7 am by the new zone's clock, or at once when turned off", () => {
+    expect(lines(["TIME_ZONE"], { TIME_ZONE: "Australia/Perth", QUIET_HOURS_ENABLED: "true" }, counts({ held: 2 }))).toContain(
+      "2 escalations are held for quiet hours. They go out at 7:00 am by the new time zone's clock.",
     );
+    expect(lines(["QUIET_HOURS_ENABLED"], { QUIET_HOURS_ENABLED: "true" })[0]).toBe("Escalations from now on wait overnight, 9:00 pm to 7:00 am.");
     expect(lines(["QUIET_HOURS_ENABLED"], { QUIET_HOURS_ENABLED: "false" }, counts({ held: 1 }))[0]).toBe("1 escalation is held for quiet hours. It goes out at the next check.");
     expect(lines(["QUIET_HOURS_ENABLED"], { QUIET_HOURS_ENABLED: "false" })[0]).toBe("Escalations from now on go out at any hour.");
   });
@@ -67,13 +68,11 @@ describe("impactLines", () => {
     expect(lines(["REMINDER_TASK_ENABLED"], { REMINDER_TASK_ENABLED: "false" })).toEqual(["No new reminder tasks from now on."]);
   });
 
-  it("sender, alerts channel and support link", () => {
+  it("sender and alerts channel", () => {
     expect(lines(["CT_PUBLISHER_ID", "CT_PUBLISHER_NAME"], { CT_PUBLISHER_NAME: "Bot" }, counts({ needsForm: 4 }))).toEqual([
       'Messages from now on come from "Bot", including those for the 4 Shifts in progress.',
     ]);
     expect(lines(["ALERTS_CHANNEL_ID"], {}, counts({ alertsOpen: 1 }))).toEqual(["1 problem is being reported now. Updates on it go to the new chat."]);
-    expect(lines(["INTEGRATOR_RELAY_URL"], { INTEGRATOR_RELAY_URL: "https://r.example" })[0]).toMatch(/^Problems are also sent to your integrator/);
-    expect(lines(["INTEGRATOR_RELAY_URL"], { INTEGRATOR_RELAY_URL: "" }, counts(), { INTEGRATOR_RELAY_URL: "https://r.example" })[0]).toMatch(/^Problems are no longer sent/);
   });
 
   it("a time zone change: quiet hours, shift times in messages, and dated answers without a zone", () => {

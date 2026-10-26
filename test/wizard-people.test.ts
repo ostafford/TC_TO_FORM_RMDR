@@ -7,8 +7,6 @@ import { describe, it, expect } from "vitest";
 import type { ConnecteamUser } from "../src/connecteam/types.js";
 import {
   adminRows,
-  checkClientSlug,
-  checkRelayUrl,
   conversationLabels,
   directManagerLine,
   directManagers,
@@ -75,19 +73,5 @@ describe("soundsAutomated", () => {
   it("is a hint that the sender says it isn't a person", () => {
     for (const n of ["Compliance Reminders (Automated)", "Form Bot", "Shift Reminder", "No-reply"]) expect(soundsAutomated(n)).toBe(true);
     for (const n of ["Implementation Publisher", "Okky", "Robotics Team"]) expect(soundsAutomated(n)).toBe(false);
-  });
-});
-
-describe("the support link's values", () => {
-  it("the link must be https, without a trailing slash", () => {
-    expect(checkRelayUrl(" https://relay.example.workers.dev/ ")).toEqual({ ok: true, value: "https://relay.example.workers.dev" });
-    expect(checkRelayUrl("http://relay.example").ok).toBe(false);
-    expect(checkRelayUrl("relay").ok).toBe(false);
-  });
-
-  it("the name keeps to what the relay keeps intact, lowered", () => {
-    expect(checkClientSlug("Acme-Cleaning")).toEqual({ ok: true, value: "acme-cleaning" });
-    expect(checkClientSlug("site_2.b").ok).toBe(true);
-    for (const t of ["", "Acme Cleaning", "-acme", "x".repeat(65)]) expect(checkClientSlug(t).ok).toBe(false);
   });
 });

@@ -68,24 +68,3 @@ export function conversationLabels(conversations: Conversation[]): string[] {
 export function soundsAutomated(name: string): boolean {
   return /automat|\bbot\b|reminder|no[- ]?reply|system|notification/i.test(name);
 }
-
-/** The support link's address: https only. */
-export function checkRelayUrl(text: string): { ok: true; value: string } | { ok: false; problem: string } {
-  const t = text.trim().replace(/\/+$/, "");
-  try {
-    if (new URL(t).protocol === "https:") return { ok: true, value: t };
-  } catch {
-    // falls through
-  }
-  return { ok: false, problem: `"${text.trim()}" isn't an https:// address. Your integrator gives you this.` };
-}
-
-/**
- * The client's name in the integrator's issues: letters, digits, `-`, `.`
- * and `_`, as the relay keeps them (relay/src/types.ts clientSlug), lowered.
- */
-export function checkClientSlug(text: string): { ok: true; value: string } | { ok: false; problem: string } {
-  const t = text.trim().toLowerCase();
-  if (/^[a-z0-9][a-z0-9._-]{0,63}$/.test(t)) return { ok: true, value: t };
-  return { ok: false, problem: `Use letters, numbers and dashes only (up to 64), like acme-cleaning.` };
-}

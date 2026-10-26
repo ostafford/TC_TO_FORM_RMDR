@@ -1,21 +1,23 @@
 /** Quiet Hours clock maths (#29): a window across midnight or not, in the Deployment's zone, through daylight saving. */
 import { describe, it, expect } from "vitest";
-import { isQuiet, parseClock, quietEnds } from "../src/escalation/quietHours.js";
+import { inWindow, isQuiet, QUIET_HOURS, quietEnds } from "../src/escalation/quietHours.js";
 import { escalationSummaries, type SummaryEntry } from "../src/messages/escalation.js";
 
 const at = (iso: string) => Date.parse(iso) / 1000;
 const SYD = "Australia/Sydney";
-const NIGHT = { from: 21 * 60, until: 7 * 60 };
+const NIGHT = QUIET_HOURS;
 
-describe("parseClock", () => {
-  it.each([
-    ["21:00", 1260],
-    ["07:00", 420],
-    ["00:00", 0],
-    ["23:59", 1439],
-  ])("%s is %i minutes", (text, minutes) => expect(parseClock(text)).toBe(minutes));
+describe("QUIET_HOURS", () => {
+  it("is 9 pm to 7 am", () => expect(QUIET_HOURS).toEqual({ from: 21 * 60, until: 7 * 60 }));
+});
 
-  it.each(["9pm", "24:00", "7:00", "21:60", ""])("refuses %j", (text) => expect(parseClock(text)).toBeNull());
+describe("inWindow", () => {
+  it("wraps minutes past midnight onto the clock, as the wizard's example counts them", () => {
+    expect(inWindow(24 * 60 + 2 * 60 + 30, QUIET_HOURS)).toBe(true); // 2:30 am the next day
+    expect(inWindow(24 * 60 + 8 * 60 + 30, QUIET_HOURS)).toBe(false); // 8:30 am the next day
+    expect(inWindow(21 * 60, QUIET_HOURS)).toBe(true);
+    expect(inWindow(7 * 60, QUIET_HOURS)).toBe(false);
+  });
 });
 
 describe("isQuiet", () => {

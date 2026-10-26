@@ -203,7 +203,6 @@ finish() {
 # Example. The flow follows the prototype on prototype/setup-wizard (3a5a222).
 #
 #   npm run setup                      full first-time setup
-#   npm run setup -- --support         the same, with the support link an integrator gave
 #   npm run setup -- --step NAME       rerun one step, then apply it
 #   npm run setup -- --help
 #
@@ -219,7 +218,7 @@ finish() {
 ENV_FILE="${WIZARD_ENV_FILE:-.dev.vars}"
 
 # Every step in the order setup runs them, and the ones --step can rerun (#19, #41).
-STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts support webhook test)
+STEPS=(key timezone form timings quiet-hours recipients reminder-task sender alerts webhook test)
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   RED=$(tput setaf 1)
@@ -520,11 +519,9 @@ s_key() {
 }
 
 # The suggested defaults (#19): 30-minute Grace Period, 4-hour escalation
-# delay, Quiet Hours 9 pm to 7 am.
+# delay. Quiet Hours are on by default, and always 9 pm to 7 am.
 DEFAULT_GRACE=30
 DEFAULT_DELAY=240
-DEFAULT_QUIET_FROM="21:00"
-DEFAULT_QUIET_UNTIL="07:00"
 DEFAULT_WHERE="the Forms tab in the Connecteam app"
 
 s_timezone() {
@@ -696,48 +693,22 @@ s_delay() {
 s_quiet() {
   stage "Quiet hours"
   why "Escalations go to every admin, so they shouldn't arrive in the middle of the" \
-      "night. During quiet hours they wait, then go out as one summary per admin" \
-      "when quiet hours end. Reminders to the employee are never held: they've just" \
-      "finished work and can fix it now."
-  todo "Choose whether to use quiet hours. A team that works around the clock may want them off." \
-       "If you use them, type when they start and end, or press Enter to keep the suggestions."
-  local grace delay on qfrom quntil input
+      "night. With quiet hours on, an escalation due between 9 pm and 7 am waits," \
+      "then goes out in one morning summary per admin at 7 am. Reminders to the" \
+      "employee are never held: they've just finished work and can fix it now."
+  todo "Answer y to hold escalations overnight (recommended), or n to send them at any hour, for a team that works around the clock."
+  local grace delay on input
   grace=$(saved_or GRACE_PERIOD_MINUTES "$DEFAULT_GRACE")
   delay=$(saved_or ESCALATION_DELAY_MINUTES "$DEFAULT_DELAY")
   on=$(saved_or QUIET_HOURS_ENABLED true)
-  qfrom=$(saved_or QUIET_HOURS_FROM "$DEFAULT_QUIET_FROM")
-  quntil=$(saved_or QUIET_HOURS_UNTIL "$DEFAULT_QUIET_UNTIL")
-  example_from_helper quiet-example "$grace" "$delay" "$qfrom" "$quntil"
-  ask_yn input "Use quiet hours?" "$([[ "$on" == false ]] && echo n || echo y)" || { fail "No answer given."; exit 1; }
+  example_from_helper quiet-example "$grace" "$delay" on
+  ask_yn input "Hold escalations overnight, 9 pm to 7 am?" "$([[ "$on" == false ]] && echo n || echo y)" || { fail "No answer given."; exit 1; }
   if [[ "$input" == n ]]; then
     save QUIET_HOURS_ENABLED false "quiet hours (off)"
     warn "Escalations will go out at any hour, day or night."
-    next_up "who receives escalations."
-    return
+  else
+    save QUIET_HOURS_ENABLED true "quiet hours (on, 9 pm to 7 am)"
   fi
-  while :; do
-    helper clock-label "$qfrom" || HELPER_OUT="$qfrom"
-    while :; do
-      ask_default input "Quiet from?" "$HELPER_OUT" || { fail "No answer given."; exit 1; }
-      if helper clock "$input"; then qfrom="$HELPER_OUT"; break; fi
-      fail "$HELPER_OUT"
-    done
-    helper clock-label "$quntil" || HELPER_OUT="$quntil"
-    while :; do
-      ask_default input "Quiet until?" "$HELPER_OUT" || { fail "No answer given."; exit 1; }
-      if helper clock "$input"; then quntil="$HELPER_OUT"; break; fi
-      fail "$HELPER_OUT"
-    done
-    [[ "$qfrom" != "$quntil" ]] && break
-    fail "Quiet hours can't start and end at the same time. To have none, rerun this step and answer n."
-  done
-  if [[ "$on" == false || "$qfrom" != "$(saved_or QUIET_HOURS_FROM "$DEFAULT_QUIET_FROM")" || "$quntil" != "$(saved_or QUIET_HOURS_UNTIL "$DEFAULT_QUIET_UNTIL")" ]]; then
-    printf '\n  With those times:\n'
-    example_from_helper quiet-example "$grace" "$delay" "$qfrom" "$quntil"
-  fi
-  save QUIET_HOURS_ENABLED true "quiet hours (on)"
-  save QUIET_HOURS_FROM "$qfrom" "when quiet hours start"
-  save QUIET_HOURS_UNTIL "$quntil" "when quiet hours end"
   next_up "who receives escalations."
 }
 
@@ -932,51 +903,6 @@ s_alerts() {
     fi
     fail "$HELPER_OUT"
   done
-  if [[ -n "${WITH_SUPPORT:-}" ]]; then next_up "the support link."; else next_up "a tip about Connecteam's own clock-out question."; fi
-}
-
-# no_relay: save "no support link".
-no_relay() {
-  write_env INTEGRATOR_RELAY_URL "" >/dev/null
-  write_env INTEGRATOR_CLIENT_SLUG "" >/dev/null
-  write_env INTEGRATOR_RELAY_SECRET "" >/dev/null
-  ok "Saved: no support link."
-  next_up "a tip about Connecteam's own clock-out question."
-}
-
-s_relay() {
-  stage "Support link (optional)"
-  why "If your integrator supports this setup for you, problems are also sent to" \
-      "them directly, even when Connecteam itself can't deliver them, plus a daily" \
-      "\"still running\" check. Staff names are never sent, only counts."
-  todo "Answer y only if your integrator gave you a support link." \
-       "Then paste the link, the short name they gave you, and the secret." \
-       "Answered y by mistake? Press Enter at the link with nothing typed."
-  example "Link: https://clock-out-relay.example.workers.dev" \
-          "Name: acme-cleaning (it appears in your integrator's issue titles, which are public)"
-  local on input url slug
-  ask_yn on "Send problems to your integrator as well?" "$([[ -n "$(saved_or INTEGRATOR_RELAY_URL "")" ]] && echo y || echo n)" \
-    || { fail "No answer given."; exit 1; }
-  if [[ "$on" == n ]]; then no_relay; return; fi
-  while :; do
-    ask_default input "Support link:" "$(saved_or INTEGRATOR_RELAY_URL "")" || { fail "No link given."; exit 1; }
-    [[ -n "$input" ]] || { no_relay; return; }
-    if helper relay-url "$input"; then url="$HELPER_OUT"; break; fi
-    fail "$HELPER_OUT"
-  done
-  while :; do
-    ask_default input "Your name for them:" "$(saved_or INTEGRATOR_CLIENT_SLUG "")" || { fail "No name given."; exit 1; }
-    if helper slug "$input"; then slug="$HELPER_OUT"; break; fi
-    fail "$HELPER_OUT"
-  done
-  while :; do
-    ask_secret INTEGRATOR_RELAY_SECRET "Paste the secret (it won't show):" || { fail "No secret given."; exit 1; }
-    [[ -n "$INTEGRATOR_RELAY_SECRET" ]] && break
-    fail "The secret can't be blank. Your integrator gives you it with the link."
-  done
-  write_env INTEGRATOR_RELAY_URL "$url" >/dev/null
-  write_env INTEGRATOR_CLIENT_SLUG "$slug" >/dev/null
-  save INTEGRATOR_RELAY_SECRET "$INTEGRATOR_RELAY_SECRET" "the support link ($slug)"
   next_up "a tip about Connecteam's own clock-out question."
 }
 
@@ -1155,9 +1081,6 @@ s_turn_on() {
   # stops to ask whether to create one.
   put_secret CT_API_KEY "$CT_API_KEY" "the API key"
   put_secret CT_WEBHOOK_SECRET "$secret" "the webhook secret"
-  local relay_secret
-  relay_secret=$(_existing INTEGRATOR_RELAY_SECRET || true)
-  [[ -z "$relay_secret" ]] || put_secret INTEGRATOR_RELAY_SECRET "$relay_secret" "the support link's secret"
   need_worker_url
   ok "Deployed: $WORKER_URL"
   subscribe_webhooks
@@ -1256,7 +1179,7 @@ s_done() {
 
 # apply_rerun BEFORE: after a --step rerun on a running Deployment (#41),
 # say what the change affects, counted in D1, then on a yes run the checking
-# deploy, store a secret that changed, and move the webhooks a form or board
+# deploy, store the key if it changed, and move the webhooks a form or board
 # change moves. On a no, .dev.vars goes back to the copy BEFORE.
 apply_rerun() {
   local before="$1" keys l d1
@@ -1293,9 +1216,6 @@ apply_rerun() {
   # Live now: keep it, even if a step below fails.
   RERUN_KEEP=1
   [[ "$keys" != *$'\nCT_API_KEY\n'* ]] || put_secret CT_API_KEY "$(_existing CT_API_KEY)" "the API key"
-  if [[ "$keys" == *$'\nINTEGRATOR_RELAY_SECRET\n'* && -n "$(_existing INTEGRATOR_RELAY_SECRET || true)" ]]; then
-    put_secret INTEGRATOR_RELAY_SECRET "$(_existing INTEGRATOR_RELAY_SECRET)" "the support link's secret"
-  fi
   if [[ "$keys" == *$'\nCOMPLIANCE_FORM_ID\n'* || "$keys" == *$'\nTASK_BOARD_ID\n'* ]]; then
     need_worker_url
     subscribe_webhooks
@@ -1336,7 +1256,6 @@ run_step() {
     reminder-task) s_task ;;
     sender) s_sender ;;
     alerts) s_alerts ;;
-    support) s_relay ;;
     webhook) s_webhook ;;
     test) s_test ;;
   esac
@@ -1354,7 +1273,6 @@ usage() {
 Clock-out Form Reminder setup
 
   npm run setup                    full first-time setup
-  npm run setup -- --support       the same, with the support link your integrator gave you
   npm run setup -- --step NAME     rerun one step, see what it affects, then apply it
   npm run setup -- --help          this message
 
@@ -1365,11 +1283,9 @@ USAGE
 run_wizard() {
 
 ONLY=""
-WITH_SUPPORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --step) ONLY="${2:-}"; [[ -n "$ONLY" ]] || { usage >&2; exit 2; }; shift ;;
-    --support) WITH_SUPPORT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -1423,10 +1339,7 @@ if [[ -n "$ONLY" ]]; then
   return
 fi
 
-# The support link is asked only when an integrator gave one: with --support,
-# or when one is saved, so a rerun keeps it (#41).
-[[ -z "$(saved_or INTEGRATOR_RELAY_URL "")" ]] || WITH_SUPPORT=1
-if [[ -n "$WITH_SUPPORT" ]]; then TOTAL_STAGES=18; else TOTAL_STAGES=17; fi
+TOTAL_STAGES=17
 banner "Clock-out Form Reminder: setup"
 s_cloudflare
 s_key
@@ -1438,7 +1351,6 @@ s_recipients
 s_task
 s_sender
 s_alerts
-[[ -z "$WITH_SUPPORT" ]] || s_relay
 s_tip
 s_summary
 s_turn_on

@@ -25,7 +25,7 @@ const ESCALATE = REMINDED + DELAY;
 /** Quiet Hours end: 7:00 am Wed 7 Oct. */
 const MORNING = syd(7, 7);
 
-const QUIET = { QUIET_HOURS_ENABLED: "true", QUIET_HOURS_FROM: "21:00", QUIET_HOURS_UNTIL: "07:00" };
+const QUIET = { QUIET_HOURS_ENABLED: "true" };
 
 const JORDAN: FakeUser = { userId: 501, firstName: "Jordan", lastName: "Lee", directManager: 30 };
 const AVERY: FakeUser = { userId: 502, firstName: "Avery", lastName: "Ng" };
@@ -167,18 +167,17 @@ describe("Quiet Hours", () => {
     expect(to(ADMIN.userId)).toEqual([expect.stringMatching(/^MISSING COMPLIANCE FORMS \(1\)\n/)]);
   });
 
-  it("across midnight or not, follow the Deployment's own zone through daylight saving", async () => {
-    // Sun 4 Oct 2026: Sydney's clocks go forward at 2:00 am. Quiet 1:00 am to 6:00 am.
-    setUp({ QUIET_HOURS_ENABLED: "true", QUIET_HOURS_FROM: "01:00", QUIET_HOURS_UNTIL: "06:00" });
+  it("follow the Deployment's own zone through daylight saving", async () => {
+    // Sun 4 Oct 2026: Sydney's clocks go forward at 2:00 am, inside Quiet Hours.
     const start = Date.UTC(2026, 9, 3, 9, 0) / 1000; // Sat 3 Oct, 7:00 pm AEST (UTC+10)
     const end = start + 2 * HOUR; // 9:00 pm
     await h.webhook(timeActivity({ eventType: "clock_out", userId: JORDAN.userId, id: "ta-dst", start, end }));
     await h.tick(end + GRACE); // reminded 9:30 pm; escalation due 1:30 am, quiet
     await h.tick(end + GRACE + DELAY);
-    const sixAm = Date.UTC(2026, 9, 3, 19, 0) / 1000; // 6:00 am AEDT (UTC+11)
-    await h.tick(sixAm - MINUTE);
+    const sevenAm = Date.UTC(2026, 9, 3, 20, 0) / 1000; // 7:00 am AEDT (UTC+11)
+    await h.tick(sevenAm - MINUTE);
     expect(escalations()).toEqual([]);
-    await h.tick(sixAm);
+    await h.tick(sevenAm);
     expect(to(ADMIN.userId)).toHaveLength(1);
   });
 

@@ -6,7 +6,6 @@ import {
   delayTimeline,
   graceExample,
   normaliseWhere,
-  parseClockInput,
   parseDuration,
   quietExample,
 } from "../scripts/lib/wizard-values.js";
@@ -29,22 +28,6 @@ describe("parseDuration", () => {
 
   it("refuses nothing, zero, part-minutes and words", () => {
     for (const t of ["", "0", "0.5", "soon", "4 days", "-5", "1h soon"]) expect(parseDuration(t, "minutes")).toBeNull();
-  });
-});
-
-describe("parseClockInput", () => {
-  it("reads 12- and 24-hour times as HH:MM", () => {
-    expect(parseClockInput("9 pm")).toBe("21:00");
-    expect(parseClockInput("9pm")).toBe("21:00");
-    expect(parseClockInput("7:30 a.m.")).toBe("07:30");
-    expect(parseClockInput("12 am")).toBe("00:00");
-    expect(parseClockInput("12 pm")).toBe("12:00");
-    expect(parseClockInput("21:00")).toBe("21:00");
-    expect(parseClockInput("7:05")).toBe("07:05");
-  });
-
-  it("refuses a bare hour, which could be morning or evening, and impossible times", () => {
-    for (const t of ["7", "", "13 pm", "0 am", "24:00", "9:60", "noon"]) expect(parseClockInput(t)).toBeNull();
   });
 });
 
@@ -87,15 +70,13 @@ describe("the worked examples", () => {
     expect(delayTimeline(45, 480)[2]).toBe(" 1:45 am   (next day) still no form, 8 hours later → your admins and Jordan's manager are told");
   });
 
-  it("Quiet Hours: the 10 pm example, held or not by the chosen window", () => {
-    const night = { from: "21:00", until: "07:00" };
-    expect(quietExample(30, 240, night)).toEqual([
+  it("Quiet Hours: the 10 pm example, held overnight or not", () => {
+    expect(quietExample(30, 240, true)).toEqual([
       "A shift ends at 10:00 pm.",
       "10:30 pm   reminder to the employee (sent: reminders are never held)",
       " 2:30 am   (next day) escalation due → held until 7:00 am, then sent in the morning summary",
     ]);
-    expect(quietExample(30, 600, night)[2]).toBe(" 8:30 am   (next day) escalation sent straight away (outside quiet hours)");
-    expect(quietExample(30, 240, { from: "01:00", until: "05:00" })[2]).toContain("held until 5:00 am");
-    expect(quietExample(30, 240, null)[2]).toBe(" 2:30 am   (next day) escalation sent straight away (quiet hours off)");
+    expect(quietExample(30, 600, true)[2]).toBe(" 8:30 am   (next day) escalation sent straight away (outside quiet hours)");
+    expect(quietExample(30, 240, false)[2]).toBe(" 2:30 am   (next day) escalation sent straight away (quiet hours off)");
   });
 });

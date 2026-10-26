@@ -28,8 +28,6 @@ const goodVars: Record<string, string> = {
   GRACE_PERIOD_MINUTES: "30",
   ESCALATION_DELAY_MINUTES: "240",
   QUIET_HOURS_ENABLED: "true",
-  QUIET_HOURS_FROM: "21:00",
-  QUIET_HOURS_UNTIL: "07:00",
   TIME_ZONE: "Australia/Sydney",
   EXCLUDED_ADMIN_IDS: "101, 102",
   REMINDER_TASK_ENABLED: "true",
@@ -37,9 +35,6 @@ const goodVars: Record<string, string> = {
   CT_PUBLISHER_ID: "4242",
   CT_PUBLISHER_NAME: "Form Reminder (automated)",
   ALERTS_CHANNEL_ID: "chan-1",
-  INTEGRATOR_RELAY_URL: "",
-  INTEGRATOR_CLIENT_SLUG: "",
-  INTEGRATOR_RELAY_SECRET: "",
 };
 
 const keysOf = (problems: Array<{ key: string }>) => problems.map((p) => p.key);
@@ -94,22 +89,10 @@ describe("checkSettings", () => {
     expect(keysOf(checkSettings({ ...goodVars, [DATABASE_ID_KEY]: DATABASE_ID_PLACEHOLDER }))).toEqual([DATABASE_ID_KEY]);
   });
 
-  it("needs Quiet Hours times only when Quiet Hours are on", () => {
-    const noTimes = { ...goodVars, QUIET_HOURS_FROM: "", QUIET_HOURS_UNTIL: "" };
-    expect(keysOf(checkSettings(noTimes))).toEqual(["QUIET_HOURS_FROM", "QUIET_HOURS_UNTIL"]);
-    expect(checkSettings({ ...noTimes, QUIET_HOURS_ENABLED: "false" })).toEqual([]);
-  });
-
   it("needs a task board only when the Reminder Task is on", () => {
     const noBoard = { ...goodVars, TASK_BOARD_ID: "" };
     expect(keysOf(checkSettings(noBoard))).toEqual(["TASK_BOARD_ID"]);
     expect(checkSettings({ ...noBoard, REMINDER_TASK_ENABLED: "false" })).toEqual([]);
-  });
-
-  it("needs a client slug once the Integrator Relay URL is set", () => {
-    const relay = { ...goodVars, INTEGRATOR_RELAY_URL: "https://relay.example.workers.dev/telemetry" };
-    expect(keysOf(checkSettings(relay))).toEqual(["INTEGRATOR_CLIENT_SLUG"]);
-    expect(checkSettings({ ...relay, INTEGRATOR_CLIENT_SLUG: "acme" })).toEqual([]);
   });
 
   it.each([
@@ -117,14 +100,11 @@ describe("checkSettings", () => {
     ["GRACE_PERIOD_MINUTES", "0"],
     ["ESCALATION_DELAY_MINUTES", "4h"],
     ["QUIET_HOURS_ENABLED", "yes"],
-    ["QUIET_HOURS_FROM", "9pm"],
-    ["QUIET_HOURS_UNTIL", "24:00"],
     ["TIME_ZONE", "Sydney"],
     ["EXCLUDED_ADMIN_IDS", "101;102"],
     ["CT_PUBLISHER_ID", "-1"],
-    ["INTEGRATOR_RELAY_URL", "http://relay.example"],
   ])("refuses %s = %j, saying what form it needs", (key, value) => {
-    const problems = checkSettings({ ...goodVars, [key]: value, INTEGRATOR_CLIENT_SLUG: "acme" });
+    const problems = checkSettings({ ...goodVars, [key]: value });
     expect(keysOf(problems)).toEqual([key]);
     expect(problems[0]!.problem).toContain(`not "${value}"`);
   });
@@ -175,7 +155,21 @@ describe("compareWithLive", () => {
     expect(compareWithLive(rendered, live)).toEqual({
       databaseChange: null,
       varChanges: [{ name: "ALERTS_CHANNEL_ID", live: "chan-1", next: "chan-2" }],
+      varRemovals: [],
     });
+  });
+
+  it("lists live settings the deploy drops, as after Quiet Hours times and the relay were removed (#67)", () => {
+    const old = [
+      ...live,
+      { name: "QUIET_HOURS_FROM", type: "plain_text", text: "22:00" },
+      { name: "INTEGRATOR_RELAY_URL", type: "plain_text", text: "https://relay.example" },
+      { name: "INTEGRATOR_RELAY_SECRET", type: "secret_text" },
+    ];
+    expect(compareWithLive(rendered, old).varRemovals).toEqual([
+      { name: "QUIET_HOURS_FROM", live: "22:00" },
+      { name: "INTEGRATOR_RELAY_URL", live: "https://relay.example" },
+    ]);
   });
 
   it("flags a different database", () => {
@@ -220,9 +214,7 @@ describe("every deploy path uses the built config, never the template", () => {
   it("npm run deploy and db:migrate check against the live Worker first, then use the built config", () => {
     expect(scripts.deploy).toBe(`tsx scripts/deploy-config.ts --check-live && wrangler deploy ${CFG}`);
     expect(scripts["db:migrate"]).toMatch(/^tsx scripts\/deploy-config\.ts --check-live && wrangler d1 migrations apply /);
-    // The relay (relay:*) has its own config, with nothing account-specific in it (#35).
-    const deployment = Object.entries(scripts).filter(([name]) => !name.startsWith("relay:")).map(([, v]) => v);
-    for (const line of configReaders(deployment.join("\n"))) expect(line).toContain(CFG);
+    for (const line of configReaders(Object.values(scripts).join("\n"))) expect(line).toContain(CFG);
   });
 
   it("the runbook's commands use the built config", () => {
