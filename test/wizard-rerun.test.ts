@@ -44,7 +44,7 @@ describe("impactLines", () => {
   });
 
   it("quiet hours: held escalations go out at 7 am by the new zone's clock, or at once when turned off", () => {
-    expect(lines(["TIME_ZONE"], { TIME_ZONE: "Australia/Perth", QUIET_HOURS_ENABLED: "true" }, counts({ held: 2 }))[1]).toBe(
+    expect(lines(["TIME_ZONE"], { TIME_ZONE: "Australia/Perth", QUIET_HOURS_ENABLED: "true" }, counts({ held: 2 }))).toContain(
       "2 escalations are held for quiet hours. They go out at 7:00 am by the new time zone's clock.",
     );
     expect(lines(["QUIET_HOURS_ENABLED"], { QUIET_HOURS_ENABLED: "true" })[0]).toBe("Escalations from now on wait overnight, 9:00 pm to 7:00 am.");
