@@ -112,6 +112,29 @@ npm run db:migrate
 npm run deploy
 ```
 
+### After the Integrator Relay was removed (#67)
+
+The support link and its relay are gone, and Quiet Hours are always 9 pm to
+7 am. A Deployment set up before that changes on its next deploy: the checking
+deploy lists `QUIET_HOURS_FROM`, `QUIET_HOURS_UNTIL` and any `INTEGRATOR_*`
+settings as removed, and custom quiet hours become 9 pm to 7 am. The old
+values left in `.dev.vars` are ignored; delete them when convenient.
+
+If a relay was ever deployed (`clock-out-form-reminder-relay`), it stops
+hearing from every Deployment and opens a "missed check-in" issue for each
+after 36 hours. Tear it down once, with its Durable Object:
+
+```bash
+npx wrangler delete clock-out-form-reminder-relay
+```
+
+Then close any issues it opened, and on each Deployment that had a support
+link, remove its leftover secret:
+
+```bash
+npx wrangler secret delete INTEGRATOR_RELAY_SECRET --config wrangler.deploy.json
+```
+
 Reading the live database, e.g. for a backup:
 
 ```bash

@@ -109,11 +109,11 @@ async function evaluate(
     return;
   }
   const claim = await store.claimAllClear(condition, now);
-  if (claim) await allClearOnce(condition, claim, deps, result);
+  if (claim) await postAllClear(condition, claim, deps, result);
 }
 
 /** Post the claimed all clear. */
-async function allClearOnce(condition: AlertCondition, claim: { quiet: boolean }, deps: DueStepDeps, result: AlertResult): Promise<void> {
+async function postAllClear(condition: AlertCondition, claim: { quiet: boolean }, deps: DueStepDeps, result: AlertResult): Promise<void> {
   const { store, now } = deps;
   const sends = await store.openUndelivered(condition);
   if (claim.quiet && sends.length === 0) {
@@ -122,11 +122,7 @@ async function allClearOnce(condition: AlertCondition, claim: { quiet: boolean }
     return;
   }
   if (await post(condition, "all_clear", allClear({ recovered: condition, sends }), deps, result)) {
-    await store.allClearPosted(
-      condition,
-      sends.map((s) => s.sendKey),
-      now,
-    );
+    await store.allClearPosted(condition, sends.map((s) => s.sendKey), now);
     return;
   }
   await store.releaseAllClear(condition);

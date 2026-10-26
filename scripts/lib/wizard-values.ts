@@ -5,7 +5,7 @@
  * a terminal.
  */
 import { formatDuration } from "../../src/messages/format.js";
-import { QUIET_HOURS } from "../../src/escalation/quietHours.js";
+import { inWindow, QUIET_HOURS } from "../../src/escalation/quietHours.js";
 
 /** The longest "where to find it" phrase a message shows in full (src/messages/reminder.ts caps it at 100). */
 export const MAX_WHERE = 100;
@@ -107,9 +107,7 @@ export const QUIET_HOURS_LABEL = `${clock12(QUIET_HOURS.from)} to ${clock12(QUIE
 export function quietExample(graceMinutes: number, delayMinutes: number, on: boolean): string[] {
   const reminder = LATE_SHIFT_END + graceMinutes;
   const escalation = reminder + delayMinutes;
-  // The window runs across midnight, as src/escalation/quietHours.ts decides.
-  const m = escalation % 1440;
-  const quiet = m >= QUIET_HOURS.from || m < QUIET_HOURS.until;
+  const quiet = inWindow(escalation, QUIET_HOURS);
   const outcome = !on
     ? "escalation sent straight away (quiet hours off)"
     : quiet

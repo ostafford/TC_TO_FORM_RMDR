@@ -155,7 +155,21 @@ describe("compareWithLive", () => {
     expect(compareWithLive(rendered, live)).toEqual({
       databaseChange: null,
       varChanges: [{ name: "ALERTS_CHANNEL_ID", live: "chan-1", next: "chan-2" }],
+      varRemovals: [],
     });
+  });
+
+  it("lists live settings the deploy drops, as after Quiet Hours times and the relay were removed (#67)", () => {
+    const old = [
+      ...live,
+      { name: "QUIET_HOURS_FROM", type: "plain_text", text: "22:00" },
+      { name: "INTEGRATOR_RELAY_URL", type: "plain_text", text: "https://relay.example" },
+      { name: "INTEGRATOR_RELAY_SECRET", type: "secret_text" },
+    ];
+    expect(compareWithLive(rendered, old).varRemovals).toEqual([
+      { name: "QUIET_HOURS_FROM", live: "22:00" },
+      { name: "INTEGRATOR_RELAY_URL", live: "https://relay.example" },
+    ]);
   });
 
   it("flags a different database", () => {

@@ -16,8 +16,8 @@
  *    is logged in to (wrong account, or a stale id), the live Worker can't be
  *    read, or the deploy would point the live Worker at a different database.
  *    --allow-database-change permits the last one, for a deliberate move.
- * Settings the deploy would change on the live Worker are listed, not blocked:
- * changing one is a normal reason to deploy.
+ * Settings the deploy would change or remove on the live Worker are listed,
+ * not blocked: changing one is a normal reason to deploy.
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -138,11 +138,12 @@ if (checkLive) {
       );
     }
     console.log(`✓ Matches the live Worker's database${diff.databaseChange ? " (change allowed)" : ""}.`);
-    if (diff.varChanges.length === 0) {
+    if (diff.varChanges.length === 0 && diff.varRemovals.length === 0) {
       console.log("✓ No settings change on the live Worker.");
     } else {
       console.log("! This deploy changes these settings on the live Worker:");
       for (const c of diff.varChanges) console.log(`    ${c.name}: "${c.live}" → "${c.next}"`);
+      for (const r of diff.varRemovals) console.log(`    ${r.name}: "${r.live}" → removed (no longer a setting)`);
     }
   }
 }

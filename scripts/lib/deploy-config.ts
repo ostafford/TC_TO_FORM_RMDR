@@ -202,6 +202,8 @@ export interface LiveComparison {
   databaseChange: { live: string; next: string } | null;
   /** Plain-text vars whose value the deploy would change. */
   varChanges: Array<{ name: string; live: string; next: string }>;
+  /** Plain-text vars on the live Worker that the deploy would drop: settings since removed (#67). */
+  varRemovals: Array<{ name: string; live: string }>;
 }
 
 /** What a deploy of `rendered` would change on the live Worker (secrets are never compared). */
@@ -214,9 +216,11 @@ export function compareWithLive(
   const varChanges = Object.entries(rendered.vars)
     .filter(([name, next]) => (liveVars.get(name) ?? "") !== next)
     .map(([name, next]) => ({ name, live: liveVars.get(name) ?? "", next }));
+  const varRemovals = [...liveVars].filter(([name]) => !(name in rendered.vars)).map(([name, live]) => ({ name, live }));
   return {
     databaseChange: liveDb && liveDb !== rendered.databaseId ? { live: liveDb, next: rendered.databaseId } : null,
     varChanges,
+    varRemovals,
   };
 }
 

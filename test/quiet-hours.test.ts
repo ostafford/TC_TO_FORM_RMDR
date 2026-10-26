@@ -1,6 +1,6 @@
 /** Quiet Hours clock maths (#29): a window across midnight or not, in the Deployment's zone, through daylight saving. */
 import { describe, it, expect } from "vitest";
-import { isQuiet, QUIET_HOURS, quietEnds } from "../src/escalation/quietHours.js";
+import { inWindow, isQuiet, QUIET_HOURS, quietEnds } from "../src/escalation/quietHours.js";
 import { escalationSummaries, type SummaryEntry } from "../src/messages/escalation.js";
 
 const at = (iso: string) => Date.parse(iso) / 1000;
@@ -9,6 +9,15 @@ const NIGHT = QUIET_HOURS;
 
 describe("QUIET_HOURS", () => {
   it("is 9 pm to 7 am", () => expect(QUIET_HOURS).toEqual({ from: 21 * 60, until: 7 * 60 }));
+});
+
+describe("inWindow", () => {
+  it("wraps minutes past midnight onto the clock, as the wizard's example counts them", () => {
+    expect(inWindow(24 * 60 + 2 * 60 + 30, QUIET_HOURS)).toBe(true); // 2:30 am the next day
+    expect(inWindow(24 * 60 + 8 * 60 + 30, QUIET_HOURS)).toBe(false); // 8:30 am the next day
+    expect(inWindow(21 * 60, QUIET_HOURS)).toBe(true);
+    expect(inWindow(7 * 60, QUIET_HOURS)).toBe(false);
+  });
 });
 
 describe("isQuiet", () => {
