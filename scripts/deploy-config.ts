@@ -123,7 +123,7 @@ if (checkLive) {
     }
     console.log("✓ No live Worker yet: this is its first deploy.");
     if (!secretsFollow) {
-      console.log(`! It has no secrets yet: set both secrets now, or the Worker will do nothing (${SECRET_KEYS.join(", ")}).`);
+      console.log(`! It has no secrets yet: set ${SECRET_KEYS.join(" and ")} now, or the Worker will do nothing.`);
     }
   }
 
@@ -156,14 +156,14 @@ if (checkLive) {
     }
     const missing = SECRET_KEYS.filter((k) => !secretNames.includes(k));
     if (missing.length === 0) {
-      console.log("✓ The live Worker has both secrets.");
+      console.log(`✓ The live Worker has ${SECRET_KEYS.join(" and ")}.`);
     } else if (secretsFollow) {
       console.log(`✓ The live Worker is missing ${missing.join(" and ")}, set right after this deploy.`);
     } else {
       stop(
-        `✗ The live Worker is missing the secret ${missing.join(" and ")}: without both, it deploys and then does nothing.`,
-        "  Set it, then deploy again: npm run deploy:config, then",
-        ...missing.map((k) => `    npx wrangler secret put ${k} --config wrangler.deploy.json`),
+        `✗ The live Worker is missing ${missing.join(" and ")}. Without ${SECRET_KEYS.join(" and ")}, it deploys and then does nothing.`,
+        `  Set ${missing.length === 1 ? "it" : "them"}, then deploy again: npm run deploy:config, then`,
+        ...missing.map((k) => `    npx wrangler secret put ${k} --config ${configPath}`),
       );
     }
     if (diff.varChanges.length === 0 && diff.varRemovals.length === 0) {

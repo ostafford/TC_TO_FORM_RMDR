@@ -632,9 +632,10 @@ describe("step 13, the Alerts Channel (--step alerts)", { timeout: SLOW }, () =>
 /**
  * A stand-in for wrangler: databases kept in a state file, every call and
  * every secret logged, and a deploy that prints a workers.dev address as the
- * real one does.
+ * real one does. With `liveSecrets`, a Worker is already live on `databaseId`
+ * holding those secret names; without, it doesn't exist yet.
  */
-function fakeWrangler(opts: { databaseId?: string; counts?: Record<string, number>; whoami?: string } = {}): { env: Record<string, string>; log: () => string; dir: string } {
+function fakeWrangler(opts: { databaseId?: string; counts?: Record<string, number>; whoami?: string; liveSecrets?: string[] } = {}): { env: Record<string, string>; log: () => string; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "wrangler-"));
   const bin = join(dir, "wrangler");
   if (opts.databaseId) writeFileSync(join(dir, "d1.json"), JSON.stringify([{ uuid: opts.databaseId, name: "clock-out-form-reminder" }]));
@@ -654,7 +655,9 @@ case "$1 $2" in
   "d1 create") echo '[{"uuid":"11111111-2222-3333-4444-555555555555","name":"'"$3"'"}]' > "$state"
                echo 'Created your new D1 database. "database_id": "11111111-2222-3333-4444-555555555555"' ;;
   "d1 migrations") echo "Migrations applied" ;;
-  "deployments status") echo "This Worker does not exist on your account. [code: 10007]" >&2; exit 1 ;;
+  "deployments status") ${opts.liveSecrets ? `echo '{"versions":[{"version_id":"v1","percentage":100}]}'` : `echo "This Worker does not exist on your account. [code: 10007]" >&2; exit 1`} ;;
+  "versions view") echo '{"resources":{"bindings":[{"name":"DB","type":"d1","database_id":"${opts.databaseId ?? ""}"}]}}' ;;
+  "secret list") echo '${JSON.stringify((opts.liveSecrets ?? []).map((name) => ({ name, type: "secret_text" })))}' ;;
   "deploy "*|"deploy") echo "Uploaded clock-out-form-reminder"; echo "  https://clock-out-form-reminder.test.workers.dev" ;;
   "secret put") echo "secret $3=$(cat)" >> "$log"; echo "Success! Uploaded secret $3" ;;
   *) echo "fake wrangler: unexpected $*" >&2; exit 9 ;;
@@ -760,6 +763,20 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     expect(webhookCalls.filter((c) => c.startsWith("PUT"))).toHaveLength(3);
     expect(webhookCalls).toContain("DELETE 950");
     expect(webhooks.filter((w) => w.url === url)).toHaveLength(3);
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("rerun after a first run stopped before the secrets: the live Worker missing one isn't refused, and both are stored (#80)", async () => {
+    webhooks = [];
+    dms.length = 0;
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", liveSecrets: ["CT_API_KEY"] });
+    const env = tempEnv();
+    const r = await run([], FIRST_RUN, env, cf.env);
+    expect(r.code, r.out).toBe(0);
+    const calls = cf.log();
+    expect(calls).toMatch(/wrangler secret list/);
+    expect(calls).toContain(`secret CT_WEBHOOK_SECRET=${saved(env).CT_WEBHOOK_SECRET}`);
+    expect(r.out).toContain("Deployed: https://clock-out-form-reminder.test.workers.dev");
     rmSync(cf.dir, { recursive: true });
   });
 });
@@ -901,6 +918,17 @@ describe("rerunning a step on a running Deployment (--step, #41)", { timeout: SL
     expect(webhooks.find((w) => w.id === 1)?.name).toBe("Someone else's");
     expect(calls).not.toContain("secret put");
     expect(r.out).toContain("Applied.");
+    rmSync(cf.dir, { recursive: true });
+  });
+
+  it("a live Worker missing a secret is refused: .dev.vars put back, nothing deployed (#80)", async () => {
+    const cf = fakeWrangler({ databaseId: "11111111-2222-3333-4444-555555555555", counts: COUNTS, liveSecrets: ["CT_API_KEY"] });
+    const env = running();
+    const r = await run(["--step", "timings"], "45\n\n", env, cf.env);
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain("The live Worker is missing CT_WEBHOOK_SECRET.");
+    expect(readFileSync(env, "utf8")).toBe(RUNNING);
+    expect(cf.log()).not.toMatch(/wrangler deploy --config/);
     rmSync(cf.dir, { recursive: true });
   });
 

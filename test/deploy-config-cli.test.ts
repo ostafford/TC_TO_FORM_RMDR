@@ -77,23 +77,35 @@ describe("npm run deploy and the live Worker's secrets", { timeout: 30_000 }, ()
   it("refuses while the live Worker is missing a secret, and names it", async () => {
     const r = await checkLive(["CT_API_KEY"]);
     expect(r.code).toBe(1);
-    expect(r.out).toContain("CT_WEBHOOK_SECRET");
-    expect(r.out).not.toMatch(/missing[^\n]*CT_API_KEY/);
+    expect(r.out).toContain("✗ The live Worker is missing CT_WEBHOOK_SECRET. Without CT_API_KEY and CT_WEBHOOK_SECRET, it deploys and then does nothing.");
+    expect(r.out).toContain("Set it, then deploy again");
     expect(r.out).toContain("Nothing was deployed or changed.");
   });
 
-  it("on a first deploy, warns to set both secrets and carries on", async () => {
+  it("names both when both are missing", async () => {
+    const r = await checkLive([]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("✗ The live Worker is missing CT_API_KEY and CT_WEBHOOK_SECRET.");
+    expect(r.out).toContain("Set them, then deploy again");
+    expect(r.out).toMatch(/secret put CT_API_KEY --config \S+wrangler\.deploy\.json/);
+    expect(r.out).toMatch(/secret put CT_WEBHOOK_SECRET --config \S+wrangler\.deploy\.json/);
+  });
+
+  it("on a first deploy, warns to set the secrets and carries on", async () => {
     const r = await checkLive();
     expect(r.code).toBe(0);
-    expect(r.out).toContain("set both secrets now, or the Worker will do nothing");
+    expect(r.out).toContain("! It has no secrets yet: set CT_API_KEY and CT_WEBHOOK_SECRET now, or the Worker will do nothing.");
   });
 
   it("with --secrets-follow (the wizard, about to set them), a missing secret is noted, not refused", async () => {
     const r = await checkLive(["CT_API_KEY"], ["--secrets-follow"]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("missing CT_WEBHOOK_SECRET, set right after this deploy");
-    const first = await checkLive(undefined, ["--secrets-follow"]);
-    expect(first.code).toBe(0);
-    expect(first.out).not.toContain("set both secrets now");
+  });
+
+  it("with --secrets-follow, a first deploy doesn't warn", async () => {
+    const r = await checkLive(undefined, ["--secrets-follow"]);
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("now, or the Worker will do nothing");
   });
 });
