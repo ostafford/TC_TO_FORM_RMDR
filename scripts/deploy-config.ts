@@ -3,7 +3,7 @@
  * 0c5ec92): the same checks, with this project's settings and names.
  */
 /**
- * `npm run deploy:config [-- --check-live] [-- --allow-database-change]`
+ * `npm run deploy:config [-- --check-live] [-- --allow-database-change] [-- --secrets-follow]`
  *
  * Writes `wrangler.deploy.json`, the config every deploy, remote D1 command
  * and `secret put` uses, from the `wrangler.jsonc` template plus this
@@ -14,8 +14,11 @@
  *    in the wrong form;
  *  - with --check-live: that database isn't on the Cloudflare account wrangler
  *    is logged in to (wrong account, or a stale id), the live Worker can't be
- *    read, or the deploy would point the live Worker at a different database.
- *    --allow-database-change permits the last one, for a deliberate move.
+ *    read, the deploy would point the live Worker at a different database, or
+ *    the live Worker is missing CT_API_KEY or CT_WEBHOOK_SECRET (#80).
+ *    --allow-database-change permits the database move, for a deliberate one;
+ *    --secrets-follow permits the missing secrets, for the setup wizard, which
+ *    sets both right after its deploy.
  * Settings the deploy would change or remove on the live Worker are listed,
  * not blocked: changing one is a normal reason to deploy.
  */
@@ -24,6 +27,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   DEPLOY_CONFIG_PATH,
   DATABASE_ID_KEY,
+  SECRET_KEYS,
   compareWithLive,
   parseDevVars,
   renderDeployConfig,
@@ -35,6 +39,7 @@ const checkLive = process.argv.includes("--check-live");
 const devVarsPath = process.env.DEV_VARS_FILE || ".dev.vars";
 const configPath = process.env.DEPLOY_CONFIG_FILE || DEPLOY_CONFIG_PATH;
 const allowDatabaseChange = process.argv.includes("--allow-database-change");
+const secretsFollow = process.argv.includes("--secrets-follow");
 
 function stop(...lines: string[]): never {
   // A config that failed a check must not be left lying around to deploy by hand.
@@ -117,6 +122,9 @@ if (checkLive) {
       stop("✗ Couldn't read the live Worker's current deployment.", String(e).trim());
     }
     console.log("✓ No live Worker yet: this is its first deploy.");
+    if (!secretsFollow) {
+      console.log(`! It has no secrets yet: set both secrets now, or the Worker will do nothing (${SECRET_KEYS.join(", ")}).`);
+    }
   }
 
   if (versionId) {
@@ -138,6 +146,26 @@ if (checkLive) {
       );
     }
     console.log(`✓ Matches the live Worker's database${diff.databaseChange ? " (change allowed)" : ""}.`);
+
+    // 3. Without both secrets the Worker deploys cleanly and then does nothing (#80). Names only, never values.
+    let secretNames: string[];
+    try {
+      secretNames = json<Array<{ name: string }>>(wrangler(["secret", "list", "--format", "json"])).map((s) => s.name);
+    } catch (e) {
+      stop("✗ Couldn't list the live Worker's secrets.", String(e).trim());
+    }
+    const missing = SECRET_KEYS.filter((k) => !secretNames.includes(k));
+    if (missing.length === 0) {
+      console.log("✓ The live Worker has both secrets.");
+    } else if (secretsFollow) {
+      console.log(`✓ The live Worker is missing ${missing.join(" and ")}, set right after this deploy.`);
+    } else {
+      stop(
+        `✗ The live Worker is missing the secret ${missing.join(" and ")}: without both, it deploys and then does nothing.`,
+        "  Set it, then deploy again: npm run deploy:config, then",
+        ...missing.map((k) => `    npx wrangler secret put ${k} --config wrangler.deploy.json`),
+      );
+    }
     if (diff.varChanges.length === 0 && diff.varRemovals.length === 0) {
       console.log("✓ No settings change on the live Worker.");
     } else {
