@@ -128,6 +128,17 @@ describe("a first tick without a submission", () => {
     expect(theTask().status).toBe("published");
   });
 
+  it("isn't sent again when the DM's connection drops mid-send, and is listed as unconfirmed", async () => {
+    await reminded();
+    await tick(TICKED);
+    h.ct.failNext("POST", "/chat/v1/conversations/privateMessage/", null);
+    for (let m = 1; m <= 12; m++) await h.tick(TICKED + m * MINUTE);
+    expect(h.ct.posts).toHaveLength(1);
+    expect(h.ct.posts[0]!.text).toContain("Unconfirmed: 1 tick message (User 501)\n");
+    await h.tick(TICKED + HOUR);
+    expect(h.ct.calls.filter((c) => c.method === "POST" && c.path === `/chat/v1/conversations/privateMessage/${JORDAN.userId}`)).toHaveLength(2);
+  });
+
   it("sends nothing more when the same delivery arrives again", async () => {
     await reminded();
     const first = taskCompleted({ ...theTask(), status: "completed" }, TICKED);

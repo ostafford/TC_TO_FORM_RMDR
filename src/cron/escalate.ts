@@ -137,7 +137,12 @@ export async function claim(p: Prepared, recipient: number, deps: DueStepDeps): 
   return null;
 }
 
-/** A send for these claims came back: mark them done on `ok`, otherwise release them and count it owed. */
+/**
+ * A send for these claims came back: mark them done on `ok`. With no answer
+ * it may have gone out, so the claims stay (never sent again) and the Shift
+ * waits like one another run is sending, until they're stuck and given up on
+ * as unconfirmed (ADR-0002). Otherwise release them and count it owed.
+ */
 export async function settle(
   p: Prepared,
   claimKeys: string[],
@@ -147,6 +152,11 @@ export async function settle(
 ): Promise<void> {
   if (sent.outcome === "ok") {
     for (const k of claimKeys) await deps.store.markSendDone(k, deps.now);
+    return;
+  }
+  if (sent.status === null) {
+    (deps.log ?? (() => {}))({ evt: "step_failed", shiftId: p.shift.id, step: "escalation", claimKept: true, ...detail, ...sent });
+    p.tally.busy++;
     return;
   }
   for (const k of claimKeys) await deps.store.releaseSend(k);

@@ -104,9 +104,9 @@ describe("a failing send", () => {
     expect(h.ct.dms).toEqual([]);
   });
 
-  it("counts a 429 and a dropped connection as failures too, naming the cause", async () => {
+  it("counts a 429 as a failure too, naming the cause", async () => {
     await clockOut();
-    h.ct.failNext("POST", DMS, null).failAll("POST", DMS, 429);
+    h.ct.failNext("POST", DMS, 503).failAll("POST", DMS, 429);
     await tickThroughTries(DUE);
     await h.tick(DUE + 64 * MINUTE);
     expect(posts()).toHaveLength(1);
@@ -115,7 +115,7 @@ describe("a failing send", () => {
 
   it("succeeding on a later try sends it once, and alerts nobody", async () => {
     await clockOut();
-    h.ct.failNext("POST", DMS, null).failNext("POST", DMS, 500);
+    h.ct.failNext("POST", DMS, 503).failNext("POST", DMS, 500);
     await tickThroughTries(DUE);
     await h.tick(DUE + 64 * MINUTE);
     expect(h.ct.dms.map((d) => d.userId)).toEqual([JORDAN.userId]);
@@ -234,6 +234,17 @@ describe("the all clear", () => {
     await h.tick(DUE + 66 * MINUTE);
     expect(posts()).toHaveLength(1);
   });
+
+  it("is posted again next run if its post times out: alerts are at least once, unlike messages to people", async () => {
+    await clockOut();
+    h.ct.failAll("POST", DMS, 503);
+    await tickThroughTries(DUE);
+    h.ct.failNext("POST", `/chat/v1/conversations/${ALERTS_CHANNEL}/message`, null);
+    await h.tick(DUE + 64 * MINUTE);
+    expect(h.ct.posts).toEqual([]);
+    await h.tick(DUE + 65 * MINUTE);
+    expect(posts()).toHaveLength(1);
+  });
 });
 
 describe("the 24-hour hold", () => {
@@ -303,6 +314,37 @@ describe("a stuck send claim", () => {
     await h.tick(DUE + DELAY);
     expect(dmCalls(ADMIN.userId)).toHaveLength(1);
     expect(dmCalls(JORDAN.userId)).toHaveLength(1);
+  });
+
+  it("from a Reminder whose connection dropped mid-send is kept, so it's never sent twice, and is listed as unconfirmed", async () => {
+    await clockOut();
+    h.ct.failNext("POST", DMS, null);
+
+    for (let m = 0; m <= 9; m++) await h.tick(DUE + m * MINUTE);
+    expect(dmCalls()).toHaveLength(1);
+    await h.tick(DUE + 10 * MINUTE);
+    await h.tick(DUE + 11 * MINUTE);
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]).toContain("Unconfirmed: 1 reminder (Jordan Lee)\n");
+    await h.tick(DUE + 2 * HOUR);
+    expect(dmCalls()).toHaveLength(1);
+  });
+
+  it("from one Escalation recipient whose connection dropped mid-send is kept, so they never get it twice", async () => {
+    setUp({}, [OWNER, ADMIN]);
+    await clockOut();
+    await h.tick(DUE);
+    h.ct.failNext("POST", `${DMS}${ADMIN.userId}`, null);
+
+    for (let m = 0; m <= 9; m++) await h.tick(DUE + DELAY + m * MINUTE);
+    expect(dmCalls(OWNER.userId)).toHaveLength(1);
+    expect(dmCalls(ADMIN.userId)).toHaveLength(1);
+    await h.tick(DUE + DELAY + 10 * MINUTE);
+    await h.tick(DUE + DELAY + 11 * MINUTE);
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]).toContain("Unconfirmed: 1 escalation (Jordan Lee)\n");
+    await h.tick(DUE + DELAY + 2 * HOUR);
+    expect(dmCalls(ADMIN.userId)).toHaveLength(1);
   });
 
   it("from a Reminder Task create that got no answer is kept, so the task is never created twice", async () => {

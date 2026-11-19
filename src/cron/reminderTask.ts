@@ -226,6 +226,13 @@ async function reopen(
   });
   const sent = await ct.sendDirectMessage(shift.userId, text);
   if (sent.outcome !== "ok") {
+    if (sent.status === null) {
+      // No answer: it may have gone out. The claim stays, so it's never sent
+      // again; once stuck, it's given up on as unconfirmed (ADR-0002).
+      await store.releaseTask(row.shiftId);
+      (deps.log ?? (() => {}))({ evt: "step_failed", shiftId: row.shiftId, step: "tick_dm", claimKept: true, ...sent });
+      return "retry";
+    }
     await store.releaseSend(claimKey);
     return retry(row, deps, { step: "tick_dm", ...sent }, giveUp);
   }
