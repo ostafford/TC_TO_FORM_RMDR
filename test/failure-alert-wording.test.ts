@@ -70,8 +70,14 @@ describe("ALL CLEAR", () => {
         "Not delivered:\n" +
         "- Reminder: Jordan Lee, Tue 20 Oct\n" +
         "- Escalation: Sam Patel, Tue 20 Oct (unconfirmed)\n\n" +
-        "Action: follow these up by hand if needed.",
+        "Action: follow these up by hand if needed. An unconfirmed one may have arrived: check with them before re-sending.",
     );
+  });
+
+  it(`with many unconfirmed, stays at or under ${MAX_MESSAGE} characters, keeping the whole Action line`, () => {
+    const text = allClear({ recovered: "messages", sends: many(40).map((s) => ({ ...s, outcome: "unconfirmed" as const })) });
+    expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
+    expect(text).toMatch(/\n- and \d+ more\n\nAction: follow these up by hand if needed\. An unconfirmed one may have arrived: check with them before re-sending\.$/);
   });
 
   it("with nothing to list, says there's nothing to do", () => {
@@ -97,7 +103,7 @@ describe("the Cause line", () => {
     [{ outcome: "failed", status: 503 }, "Connecteam not responding"],
     [{ outcome: "failed", status: 429 }, "Connecteam's rate limit"],
     [{ outcome: "failed", status: 400 }, "Connecteam refused it (HTTP 400)"],
-    [{ outcome: "unconfirmed", status: null }, "the integration stopped mid-send"],
+    [{ outcome: "unconfirmed", status: null }, "Connecteam didn't confirm a send"],
   ] as const)("%j reads %j", (f, cause) => {
     expect(failureCause(f)).toBe(cause);
   });

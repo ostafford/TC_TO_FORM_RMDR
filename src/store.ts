@@ -110,7 +110,7 @@ export interface ReminderTaskRow {
   failingSince: number | null;
 }
 
-/** A send claim held this long belongs to a run that died mid-send: it's never retried (ADR-0002, #33). */
+/** A send claim held this long belongs to a run that died mid-send or a send that got no answer: it's never retried (ADR-0002, #33). */
 export const STUCK_CLAIM_SECONDS = 10 * 60;
 
 /** The state of a send's claim. stuck: claimed more than {@link STUCK_CLAIM_SECONDS} ago and never done. */

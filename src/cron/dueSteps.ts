@@ -159,7 +159,8 @@ async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<Ste
   const escalateAt = now + settings.escalationDelayMinutes * 60;
   if (!(await store.claimSend(claimKey, shift.id, now))) {
     // Never send twice. A done claim means it already went out; a stuck one
-    // belongs to a run that died mid-send, so it's given up on, never retried.
+    // belongs to a run that died mid-send or a send that got no answer, so
+    // it's given up on, never retried.
     const state = await store.sendState(claimKey, now);
     if (state === "done") {
       await store.markReminded(shift.id, claimKey, now, escalateAt, settings.reminderTask);
