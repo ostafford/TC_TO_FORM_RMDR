@@ -148,6 +148,13 @@ Reading the live database, e.g. for a backup:
 npm run deploy:config && npx wrangler d1 export clock-out-form-reminder --remote --output=backup.sql --config wrangler.deploy.json
 ```
 
+## Tests
+
+GitHub Actions runs `npm run typecheck` and `npm test` on every push and pull
+request (`.github/workflows/test.yml`), the setup wizard's Bash tests
+included. `npm run test:integration` doesn't run there: it needs a real
+Connecteam API key in `.dev.vars`, so run it by hand.
+
 ## Tearing down / starting over
 
 > **Deleting the Worker alone is not a reset.** Deleting
