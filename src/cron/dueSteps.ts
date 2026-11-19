@@ -22,7 +22,8 @@
  *
  * A step that fails is tried again after doubling waits, and a send is given
  * up on after about an hour (./backoff.ts, #33). So is a send whose claim is
- * stuck: its run died mid-send, so it may have gone out, and is never retried.
+ * stuck: its run died mid-send, or the send got no answer, so it may have
+ * gone out, and is never retried (ADR-0002).
  * Either way the Shift carries on to its next step as scheduled.
  *
  * Overlapping runs are safe: each leases what it takes, and every send is
@@ -184,6 +185,13 @@ async function endOfGracePeriod(shift: ShiftRow, deps: DueStepDeps): Promise<Ste
   const text = state === "ended" ? reminderShiftEnded(input) : reminderStillOpen({ ...input, onBreak: state === "on_break" });
   const sent = await ct.sendDirectMessage(shift.userId, text);
   if (sent.outcome !== "ok") {
+    if (sent.status === null) {
+      // No answer: it may have gone out. The claim stays, so it's never sent
+      // again; once stuck, it's given up on as unconfirmed (ADR-0002).
+      await store.release(shift.id);
+      log({ evt: "step_failed", shiftId: shift.id, step: "reminder", claimKept: true, ...sent });
+      return "retry";
+    }
     await store.releaseSend(claimKey);
     return retry(shift, deps, { step: "reminder", ...sent }, giveUp("failed"));
   }
