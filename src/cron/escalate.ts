@@ -172,6 +172,8 @@ export async function settle(
  */
 export async function finish(p: Prepared, deps: DueStepDeps): Promise<StepResult> {
   const { shift, tally } = p;
+  // A failure wins over a claim kept after no answer: given up on, it's
+  // listed as failed, since that recipient surely didn't get it (#84).
   if (tally.failed) return retry(shift, deps, { step: "escalation", owed: tally.owed, status: tally.failed.status }, p.giveUp);
   if (tally.busy > 0) return skip(shift, deps);
   await deps.store.markEscalated(shift.id, deps.now, tally.stuck > 0 ? p.missed("unconfirmed", null) : null);
