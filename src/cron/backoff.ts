@@ -4,8 +4,9 @@
  * on a later cron run after doubling waits, by moving that step's own due
  * time, so the Shift's other steps carry on as scheduled. After the last
  * wait, about an hour in, a send is given up on and listed in a Failure
- * Alert. A send that gets no answer (a timeout) isn't tried again: it may
- * have gone out, so its claim is kept until it's stuck (ADR-0002).
+ * Alert. A send that gets no answer (a timeout or a dropped connection) isn't
+ * tried again: it may have gone out, so its claim is kept until it's stuck
+ * (ADR-0002).
  */
 import type { SendKind, ShiftRow, Undelivered } from "../store.js";
 

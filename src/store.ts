@@ -121,8 +121,8 @@ export type { SendKind };
 /**
  * A send given up on (#33): it kept failing for about an hour (`failed`), or
  * its claim was stuck (`unconfirmed`: its run died mid-send or it got no
- * answer, so it may have gone out), or it was more
- * than an hour overdue when a block lifted (`skipped`, #34).
+ * answer, so it may have gone out), or it was more than an hour overdue when
+ * a block lifted (`skipped`, #34).
  */
 export interface Undelivered {
   /** `<kind>:<shiftId>`: one per send and Shift. */

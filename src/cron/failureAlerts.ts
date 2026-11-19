@@ -18,12 +18,11 @@
  * posted only on `outcome === "ok"` (playbook: check every send's outcome).
  * Unlike messages to people, one that gets no answer is posted again next
  * run: alerts are at least once, since a stuck alert has nothing to report
- * it (ADR-0002). A
- * condition alerts at most once per 24 hours, so a problem that comes and goes
- * doesn't repeat itself; while it's held back, sends given up on or skipped
- * still reach the client in the next all clear. With the API key rejected,
- * no post can get through Connecteam; the alert stays owed, and the all clear
- * reports once the key works.
+ * it (ADR-0002). A condition alerts at most once per 24 hours, so a problem
+ * that comes and goes doesn't repeat itself; while it's held back, sends given
+ * up on or skipped still reach the client in the next all clear. With the API
+ * key rejected, no post can get through Connecteam; the alert stays owed, and
+ * the all clear reports once the key works.
  */
 import {
   allClear,

@@ -234,8 +234,10 @@ describe("the all clear", () => {
     await h.tick(DUE + 66 * MINUTE);
     expect(posts()).toHaveLength(1);
   });
+});
 
-  it("is posted again next run if its post times out: alerts are at least once, unlike messages to people", async () => {
+describe("a Failure Alert post that times out", () => {
+  it("is posted again next run: alerts are at least once, unlike messages to people", async () => {
     await clockOut();
     h.ct.failAll("POST", DMS, 503);
     await tickThroughTries(DUE);
