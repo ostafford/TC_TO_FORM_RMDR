@@ -35,7 +35,14 @@ Before anything changes, `deploy:config --check-live` refuses when:
 - that database isn't on the Cloudflare account wrangler is logged in to
   (wrong account, or a stale id);
 - the deploy would point the live Worker at a **different** database
-  (`--allow-database-change` for a deliberate move).
+  (`--allow-database-change` for a deliberate move);
+- the live Worker is missing `CT_API_KEY` or `CT_WEBHOOK_SECRET` (it names
+  which). Without both it deploys cleanly and then does nothing. It reads the
+  names from `wrangler secret list`, never the values. On a first deploy there's
+  no Worker to hold them yet, so it warns instead: set both right after.
+  (The setup wizard passes `--secrets-follow` where it stores both right after
+  its deploy, so a first run stopped between the deploy and the secrets can be
+  rerun.)
 
 It lists, without blocking, any setting the deploy would change on the live
 Worker. A raw `npx wrangler deploy` of the template fails on its placeholder

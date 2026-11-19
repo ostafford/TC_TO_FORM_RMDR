@@ -926,12 +926,12 @@ DB_NAME="clock-out-form-reminder"
 # The config every remote command uses, built from wrangler.jsonc + $ENV_FILE.
 DEPLOY_CONFIG="${WIZARD_DEPLOY_CONFIG:-wrangler.deploy.json}"
 
-# deploy_config: build and check that config (scripts/deploy-config.ts
+# deploy_config [FLAG...]: build and check that config (scripts/deploy-config.ts
 # --check-live), its output left in $DC_OUT and kept in $WIZARD_DETAILS.
 deploy_config() {
   local rc=0
-  DC_OUT=$(DEV_VARS_FILE="$ENV_FILE" DEPLOY_CONFIG_FILE="$DEPLOY_CONFIG" npm run --silent deploy:config -- --check-live < /dev/null 2>&1) || rc=$?
-  { printf '\n$ npm run deploy:config -- --check-live   (exit %s, %s)\n' "$rc" "$(date +%H:%M:%S)"; printf '%s\n' "$DC_OUT"; } >> "$WIZARD_DETAILS"
+  DC_OUT=$(DEV_VARS_FILE="$ENV_FILE" DEPLOY_CONFIG_FILE="$DEPLOY_CONFIG" npm run --silent deploy:config -- --check-live "$@" < /dev/null 2>&1) || rc=$?
+  { printf '\n$ npm run deploy:config -- --check-live %s  (exit %s, %s)\n' "$*" "$rc" "$(date +%H:%M:%S)"; printf '%s\n' "$DC_OUT"; } >> "$WIZARD_DETAILS"
   return "$rc"
 }
 
@@ -953,10 +953,10 @@ put_secret() {
   exit 1
 }
 
-# check_config: build and check the deploy config, or stop; settings it
-# would change on the live Worker are shown.
+# check_config [FLAG...]: build and check the deploy config, or stop; settings
+# it would change on the live Worker are shown.
 check_config() {
-  deploy_config || { fail "The deploy settings aren't ready:"; printf '%s\n' "$DC_OUT" | sed 's/^/    /'; return 1; }
+  deploy_config "$@" || { fail "The deploy settings aren't ready:"; printf '%s\n' "$DC_OUT" | sed 's/^/    /'; return 1; }
   if grep -q '^!' <<<"$DC_OUT"; then
     printf '%s\n' "$DC_OUT" | sed -n '/^!/,$p' | sed 's/^/  /'
   fi
@@ -1075,8 +1075,10 @@ s_turn_on() {
   fi
   write_env D1_DATABASE_ID "$db" >/dev/null
 
-  # Every remote command from here goes through the checked config.
-  check_config || exit 1
+  # Every remote command from here goes through the checked config. Both
+  # secrets are stored right after the deploy, so a live Worker missing one
+  # (a first run stopped there) isn't refused (#80).
+  check_config --secrets-follow || exit 1
   migrate
   deploy_worker
   # Secrets after the deploy: `secret put` on a Worker that doesn't exist yet
