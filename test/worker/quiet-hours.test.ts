@@ -181,7 +181,7 @@ describe("Quiet Hours", () => {
     expect(to(ADMIN.userId)).toHaveLength(1);
   });
 
-  it("stop for the minute on a 429 partway through a split Summary; the rest go on a later run, and nobody gets a Shift twice (#95)", async () => {
+  it("end with a split Summary stopped for the minute on a 429: the rest go later, each Shift once", async () => {
     const many: FakeUser[] = Array.from({ length: 10 }, (_, i) => ({ userId: 600 + i, firstName: "Employee", lastName: `Number ${i}` }));
     setUp(QUIET, many);
     for (const [i, u] of many.entries()) await reminded(u, i * MINUTE);
@@ -200,7 +200,7 @@ describe("Quiet Hours", () => {
     }
   });
 
-  it("with less than 20% of the minute left, still go out: each recipient's on a later run if not this one, each once (#95)", async () => {
+  it("end with every Summary sent with less than 20% left, each once", async () => {
     await reminded(JORDAN);
     await h.tick(ESCALATE);
     h.ct.minute = { limit: 100, remaining: 19 };

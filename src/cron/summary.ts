@@ -13,7 +13,7 @@
  */
 import { escalationSummaries } from "../messages/escalation.js";
 import type { DueStepDeps } from "./dueSteps.js";
-import { claim, finish, prepare, quietUntil, settle, type Prepared, type Reads } from "./escalate.js";
+import { claim, finish, prepare, quietUntil, settle, waitForNextRun, type Prepared, type Reads } from "./escalate.js";
 import type { StepResult } from "./steps.js";
 
 /** The most held Shifts one run takes. */
@@ -42,14 +42,11 @@ export async function runSummaries(deps: DueStepDeps): Promise<Partial<Record<St
   for (const p of ready) for (const r of p.recipients) byRecipient.set(r, [...(byRecipient.get(r) ?? []), p]);
 
   const formName = ready[0]?.formName ?? "";
-  // Stopping for the minute is checked only once a Summary has been sent: the
-  // reads above can leave the minute low, and checking then would never send (#95).
-  let tried = false;
+  let sentOne = false;
   for (const [recipient, held] of byRecipient) {
     const claimed: { p: Prepared; claimKey: string }[] = [];
     for (const p of held) {
-      // Stopped for the minute (#31): this recipient waits for the next run.
-      if (tried && deps.ct.stopped()) {
+      if (waitForNextRun(sentOne, deps)) {
         p.tally.busy++;
         continue;
       }
@@ -63,15 +60,15 @@ export async function runSummaries(deps: DueStepDeps): Promise<Partial<Record<St
     });
     for (const m of messages) {
       const these = claimed.filter((c) => m.entries.includes(c.p.entry));
-      // Stopped partway through a split Summary (#95): its other messages wait for the next run.
-      if (tried && deps.ct.stopped()) {
+      // Partway through a split Summary: its other messages' claims are released.
+      if (waitForNextRun(sentOne, deps)) {
         for (const c of these) {
           await deps.store.releaseSend(c.claimKey);
           c.p.tally.busy++;
         }
         continue;
       }
-      tried = true;
+      sentOne = true;
       const sent = await deps.ct.sendDirectMessage(recipient, m.text);
       for (const c of these) await settle(c.p, [c.claimKey], sent, deps, { recipient, summary: true });
       if (sent.outcome === "ok") counts.summaries++;
