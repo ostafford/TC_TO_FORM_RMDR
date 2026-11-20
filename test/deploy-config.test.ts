@@ -125,13 +125,17 @@ describe("renderDeployConfig", () => {
     if (r.ok) for (const key of SECRET_KEYS) expect(r.vars).not.toHaveProperty(key);
   });
 
-  it("keeps everything else in the template as it is (name, entry, cron)", () => {
+  it("keeps everything else in the template as it is (name, entry, cron, limits)", () => {
     const r = renderDeployConfig(template, goodVars);
     if (!r.ok) throw new Error("render failed");
     const t = JSON.parse(stripJsonc(template));
-    for (const key of ["name", "main", "compatibility_date", "triggers", "observability"]) {
+    for (const key of ["name", "main", "compatibility_date", "triggers", "observability", "limits"]) {
       expect(r.config[key]).toEqual(t[key]);
     }
+  });
+
+  it("sets the subrequest limit well past the Paid plan's 10,000 (#96)", () => {
+    expect(JSON.parse(stripJsonc(template)).limits?.subrequests).toBeGreaterThanOrEqual(50_000);
   });
 
   it("refuses, naming each problem, and builds nothing", () => {
