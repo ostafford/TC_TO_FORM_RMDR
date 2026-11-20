@@ -15,7 +15,6 @@ const rules = { shiftDateQuestionId: "", complianceFormId: 9001, deploymentZone:
 async function shift(id: string, start: number) {
   await store.recordSegment(
     {
-      dedupeKey: id,
       eventType: "clock_out",
       userId: 501,
       timeClockId: 67,

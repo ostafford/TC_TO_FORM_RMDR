@@ -133,7 +133,7 @@ async function feed(
     // An end is never taken away (a stored end stays, as for a delivery).
     if (was && was.startAt === activity.start.timestamp && (was.endAt === end || end === null)) continue;
 
-    const write = { dedupeKey: null, eventType: "sweep", userId, activity };
+    const write = { eventType: "sweep", userId, activity };
     if (kind === "segment") await store.recordSegment({ ...write, timeClockId }, opts);
     else await store.recordBreak(write, opts);
     await store.recordSweepFind({ timeActivityId: activity.id, kind, userId }, now);
