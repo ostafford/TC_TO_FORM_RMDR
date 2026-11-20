@@ -206,6 +206,27 @@ describe("sending each Escalation at most once", () => {
     expect(h.ct.calls).toHaveLength(calls);
   });
 
+  it("stops for the minute on a 429: the rest go next run, each once", async () => {
+    await reminded();
+    // Owner, then Admin, then the manager: the Admin's send gets the 429.
+    h.ct.failNext("POST", `/chat/v1/conversations/privateMessage/${ADMIN.userId}`, 429);
+    await h.tick(ESCALATE);
+    expect(h.ct.callsTo("POST", `/chat/v1/conversations/privateMessage/${MANAGER.userId}`)).toEqual([]);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId]);
+
+    await h.tick(ESCALATE + MINUTE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId]);
+    await h.tick(ESCALATE + 2 * MINUTE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId]);
+  });
+
+  it("still gets through with less than 20% left: one recipient or more each run, each once", async () => {
+    await reminded();
+    h.ct.minute = { limit: 100, remaining: 19 };
+    for (let m = 0; m < 5; m++) await h.tick(ESCALATE + m * MINUTE);
+    expect(escalations().map((d) => d.userId).sort()).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId].sort());
+  });
+
   it("sends nothing while the users list can't be read, then sends next minute", async () => {
     await reminded();
     h.ct.failNext("GET", "/users/v1/users", 503);

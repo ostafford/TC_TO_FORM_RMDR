@@ -62,13 +62,29 @@ export async function escalationPoint(shift: ShiftRow, deps: DueStepDeps): Promi
     deploymentZone: deps.settings.timeZone,
     formName: p.formName,
   });
+  let sentOne = false;
   for (const recipient of p.recipients) {
+    if (waitForNextRun(sentOne, deps)) {
+      p.tally.busy++;
+      continue;
+    }
     const claimKey = await claim(p, recipient, deps);
     if (!claimKey) continue;
+    sentOne = true;
     const sent = await deps.ct.sendDirectMessage(recipient, text);
     await settle(p, [claimKey], sent, deps, { recipient });
   }
   return finish(p, deps);
+}
+
+/**
+ * Whether the rest of a step's sends wait for the next run (#31, #95): the
+ * run is stopped for the minute and one has already gone out. Never before
+ * the first, since the step's own reads can leave the minute low, and
+ * checking then would never send at all.
+ */
+export function waitForNextRun(sentOne: boolean, deps: DueStepDeps): boolean {
+  return sentOne && deps.ct.stopped();
 }
 
 /**

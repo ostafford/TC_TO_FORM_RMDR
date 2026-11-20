@@ -181,6 +181,33 @@ describe("Quiet Hours", () => {
     expect(to(ADMIN.userId)).toHaveLength(1);
   });
 
+  it("end with a split Summary stopped for the minute on a 429: the rest go later, each Shift once", async () => {
+    const many: FakeUser[] = Array.from({ length: 10 }, (_, i) => ({ userId: 600 + i, firstName: "Employee", lastName: `Number ${i}` }));
+    setUp(QUIET, many);
+    for (const [i, u] of many.entries()) await reminded(u, i * MINUTE);
+    for (let i = 0; i < many.length; i++) await h.tick(ESCALATE + i * MINUTE);
+    const dmCalls = () => h.ct.calls.filter((c) => c.method === "POST" && c.path.startsWith("/chat/v1/conversations/privateMessage/"));
+    const before = dmCalls().length;
+    // The Owner's first message gets the 429.
+    h.ct.failNext("POST", `/chat/v1/conversations/privateMessage/${OWNER.userId}`, 429);
+    await h.tick(MORNING);
+    expect(dmCalls()).toHaveLength(before + 1);
+
+    for (let m = 1; m <= 10; m++) await h.tick(MORNING + m * MINUTE);
+    for (const recipient of [OWNER.userId, ADMIN.userId]) {
+      const named = to(recipient).join("\n").match(/^- Employee Number \d/gm)!;
+      expect(named.sort()).toEqual(many.map((u) => `- Employee ${u.lastName}`).sort());
+    }
+  });
+
+  it("end with every Summary sent with less than 20% left, each once", async () => {
+    await reminded(JORDAN);
+    await h.tick(ESCALATE);
+    h.ct.minute = { limit: 100, remaining: 19 };
+    for (let m = 0; m < 5; m++) await h.tick(MORNING + m * MINUTE);
+    for (const recipient of [OWNER.userId, ADMIN.userId, MANAGER.userId]) expect(to(recipient)).toHaveLength(1);
+  });
+
   it("a Summary that fails to one recipient is retried to them alone, after a wait", async () => {
     await reminded(JORDAN);
     await h.tick(ESCALATE);
