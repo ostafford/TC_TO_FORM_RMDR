@@ -126,7 +126,8 @@ export async function prepare(shift: ShiftRow, deps: DueStepDeps, reads: Reads =
 /**
  * Claim one recipient's Escalation for this Shift. Returns the claim's key,
  * or `null` when it isn't to be sent: already done, stuck (a run died
- * mid-send, so never retried), or another run is mid-send.
+ * mid-send or the send got no answer, so never retried), or another run is
+ * mid-send.
  */
 export async function claim(p: Prepared, recipient: number, deps: DueStepDeps): Promise<string | null> {
   const claimKey = `escalation:${p.shift.id}:${recipient}`;

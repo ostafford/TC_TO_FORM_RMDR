@@ -110,7 +110,7 @@ export interface ReminderTaskRow {
   failingSince: number | null;
 }
 
-/** A send claim held this long belongs to a run that died mid-send: it's never retried (ADR-0002, #33). */
+/** A send claim held this long belongs to a run that died mid-send or a send that got no answer: it's never retried (ADR-0002, #33). */
 export const STUCK_CLAIM_SECONDS = 10 * 60;
 
 /** The state of a send's claim. stuck: claimed more than {@link STUCK_CLAIM_SECONDS} ago and never done. */
@@ -657,7 +657,8 @@ export class WorkList {
   /**
    * The claim's state at `now`, or `null` when nothing holds it. A claim held
    * for more than {@link STUCK_CLAIM_SECONDS} is `stuck`: the run that took it
-   * died mid-send, so whether it went out is unknown, and it's never retried.
+   * died mid-send or the send got no answer, so whether it went out is
+   * unknown, and it's never retried.
    */
   async sendState(claimKey: string, now: number): Promise<SendState> {
     const r = await this.db

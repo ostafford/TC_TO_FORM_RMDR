@@ -45,9 +45,13 @@ const KIND: Record<SendKind, { one: string; many: string; label: string }> = {
   tick: { one: "tick message", many: "tick messages", label: "Tick message" },
 };
 
-/** What the last failure says went wrong, for the `Cause:` line. */
+/**
+ * What the last failure says went wrong, for the `Cause:` line. An unconfirmed
+ * send's claim can't tell a run that died mid-send from a send that got no
+ * answer, so its wording is true of both (#102).
+ */
 export function failureCause(f: { outcome: MissedSend["outcome"]; status: number | null }): string {
-  if (f.outcome === "unconfirmed") return "the integration stopped mid-send";
+  if (f.outcome === "unconfirmed") return "Connecteam didn't confirm a send";
   if (f.status === 429) return "Connecteam's rate limit";
   if (f.status === null || f.status >= 500) return "Connecteam not responding";
   return `Connecteam refused it (HTTP ${f.status})`;
@@ -164,7 +168,9 @@ const RECOVERED: Record<AlertCondition, string> = {
 /**
  * ALL CLEAR: the condition recovered. It lists every send given up on since
  * the condition's last all clear, to follow up by hand: for `messages`, those
- * not delivered; after a block, those skipped as more than an hour late.
+ * not delivered; after a block, those skipped as more than an hour late. An
+ * unconfirmed send may have gone out, so the Action line says to check before
+ * re-sending (#102).
  */
 export function allClear(input: {
   recovered: AlertCondition;
@@ -173,6 +179,8 @@ export function allClear(input: {
   const what = RECOVERED[input.recovered];
   if (input.sends.length === 0) return `ALL CLEAR\n\n${what}\n\nAction: none.`;
   const label = input.recovered === "messages" ? "Not delivered:" : "Skipped (over an hour late):";
+  const anyUnconfirmed = input.sends.some((s) => s.outcome === "unconfirmed");
+  const action = `Action: follow these up by hand if needed.${anyUnconfirmed ? " An unconfirmed one may have gone out: check before re-sending." : ""}`;
   return fit((names) => {
     const shown = input.sends.slice(0, names);
     const more = input.sends.length - shown.length;
@@ -182,7 +190,7 @@ export function allClear(input: {
         (s.outcome === "unconfirmed" ? " (unconfirmed)" : ""),
     );
     if (more > 0) items.push(`- and ${more} more`);
-    return `ALL CLEAR\n\n${what}\n${label}\n${items.join("\n")}\n\nAction: follow these up by hand if needed.`;
+    return `ALL CLEAR\n\n${what}\n${label}\n${items.join("\n")}\n\n${action}`;
   });
 }
 

@@ -304,7 +304,7 @@ describe("a stuck send claim", () => {
     expect(posts()).toEqual([
       "ALERT · MESSAGES NOT SENDING\n\n" +
         "Since: 1 minute ago\n" +
-        "Cause: the integration stopped mid-send\n" +
+        "Cause: Connecteam didn't confirm a send\n" +
         "Unconfirmed: 1 reminder (Jordan Lee)\n\n" +
         SENDING_ACTION,
     ]);
@@ -327,6 +327,7 @@ describe("a stuck send claim", () => {
     await h.tick(DUE + 10 * MINUTE);
     await h.tick(DUE + 11 * MINUTE);
     expect(posts()).toHaveLength(1);
+    expect(posts()[0]).toContain("Cause: Connecteam didn't confirm a send\n");
     expect(posts()[0]).toContain("Unconfirmed: 1 reminder (Jordan Lee)\n");
     await h.tick(DUE + 2 * HOUR);
     expect(dmCalls()).toHaveLength(1);
