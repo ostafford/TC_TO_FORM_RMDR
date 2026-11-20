@@ -134,6 +134,13 @@ describe("renderDeployConfig", () => {
     }
   });
 
+  it("sets the subrequest limit well past the Paid plan's 10,000, and the built config keeps it (#96)", () => {
+    const r = renderDeployConfig(template, goodVars);
+    if (!r.ok) throw new Error("render failed");
+    expect(JSON.parse(stripJsonc(template)).limits?.subrequests).toBeGreaterThanOrEqual(50_000);
+    expect(r.config.limits).toEqual(JSON.parse(stripJsonc(template)).limits);
+  });
+
   it("refuses, naming each problem, and builds nothing", () => {
     const { [DATABASE_ID_KEY]: _db, ...rest } = goodVars;
     const r = renderDeployConfig(template, { ...rest, TIME_ZONE: "Nowhere/Else" });
