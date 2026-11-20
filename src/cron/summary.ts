@@ -42,11 +42,14 @@ export async function runSummaries(deps: DueStepDeps): Promise<Partial<Record<St
   for (const p of ready) for (const r of p.recipients) byRecipient.set(r, [...(byRecipient.get(r) ?? []), p]);
 
   const formName = ready[0]?.formName ?? "";
+  // Stopping for the minute is checked only once a Summary has been sent: the
+  // reads above can leave the minute low, and checking then would never send (#95).
+  let tried = false;
   for (const [recipient, held] of byRecipient) {
     const claimed: { p: Prepared; claimKey: string }[] = [];
     for (const p of held) {
       // Stopped for the minute (#31): this recipient waits for the next run.
-      if (deps.ct.stopped()) {
+      if (tried && deps.ct.stopped()) {
         p.tally.busy++;
         continue;
       }
@@ -60,6 +63,15 @@ export async function runSummaries(deps: DueStepDeps): Promise<Partial<Record<St
     });
     for (const m of messages) {
       const these = claimed.filter((c) => m.entries.includes(c.p.entry));
+      // Stopped partway through a split Summary (#95): its other messages wait for the next run.
+      if (tried && deps.ct.stopped()) {
+        for (const c of these) {
+          await deps.store.releaseSend(c.claimKey);
+          c.p.tally.busy++;
+        }
+        continue;
+      }
+      tried = true;
       const sent = await deps.ct.sendDirectMessage(recipient, m.text);
       for (const c of these) await settle(c.p, [c.claimKey], sent, deps, { recipient, summary: true });
       if (sent.outcome === "ok") counts.summaries++;
