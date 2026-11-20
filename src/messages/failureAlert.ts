@@ -169,7 +169,7 @@ const RECOVERED: Record<AlertCondition, string> = {
  * ALL CLEAR: the condition recovered. It lists every send given up on since
  * the condition's last all clear, to follow up by hand: for `messages`, those
  * not delivered; after a block, those skipped as more than an hour late. An
- * unconfirmed send may have arrived, so the Action line says to check before
+ * unconfirmed send may have gone out, so the Action line says to check before
  * re-sending (#102).
  */
 export function allClear(input: {
@@ -179,9 +179,8 @@ export function allClear(input: {
   const what = RECOVERED[input.recovered];
   if (input.sends.length === 0) return `ALL CLEAR\n\n${what}\n\nAction: none.`;
   const label = input.recovered === "messages" ? "Not delivered:" : "Skipped (over an hour late):";
-  const action =
-    "Action: follow these up by hand if needed." +
-    (input.sends.some((s) => s.outcome === "unconfirmed") ? " An unconfirmed one may have arrived: check with them before re-sending." : "");
+  const anyUnconfirmed = input.sends.some((s) => s.outcome === "unconfirmed");
+  const action = `Action: follow these up by hand if needed.${anyUnconfirmed ? " An unconfirmed one may have gone out: check before re-sending." : ""}`;
   return fit((names) => {
     const shown = input.sends.slice(0, names);
     const more = input.sends.length - shown.length;

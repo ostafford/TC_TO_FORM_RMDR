@@ -657,7 +657,8 @@ export class WorkList {
   /**
    * The claim's state at `now`, or `null` when nothing holds it. A claim held
    * for more than {@link STUCK_CLAIM_SECONDS} is `stuck`: the run that took it
-   * died mid-send, so whether it went out is unknown, and it's never retried.
+   * died mid-send or the send got no answer, so whether it went out is
+   * unknown, and it's never retried.
    */
   async sendState(claimKey: string, now: number): Promise<SendState> {
     const r = await this.db

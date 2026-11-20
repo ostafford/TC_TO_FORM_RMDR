@@ -192,7 +192,7 @@ async function reopen(
     await store.markTickHandled(row.shiftId, { done: claimKey }, now);
     return "reopened";
   }
-  // A run died mid-send: never retried.
+  // A run died mid-send or the send got no answer: never retried.
   if (state === "stuck") return giveUpTick(row, "", "unconfirmed", deps)(null);
 
   const user = await ct.getUser(shift.userId);

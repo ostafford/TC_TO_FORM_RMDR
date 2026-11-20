@@ -70,14 +70,14 @@ describe("ALL CLEAR", () => {
         "Not delivered:\n" +
         "- Reminder: Jordan Lee, Tue 20 Oct\n" +
         "- Escalation: Sam Patel, Tue 20 Oct (unconfirmed)\n\n" +
-        "Action: follow these up by hand if needed. An unconfirmed one may have arrived: check with them before re-sending.",
+        "Action: follow these up by hand if needed. An unconfirmed one may have gone out: check before re-sending.",
     );
   });
 
-  it(`with many unconfirmed, stays at or under ${MAX_MESSAGE} characters, keeping the whole Action line`, () => {
+  it(`stays at or under ${MAX_MESSAGE} characters with many unconfirmed, keeping the whole Action line`, () => {
     const text = allClear({ recovered: "messages", sends: many(40).map((s) => ({ ...s, outcome: "unconfirmed" as const })) });
     expect(text.length).toBeLessThanOrEqual(MAX_MESSAGE);
-    expect(text).toMatch(/\n- and \d+ more\n\nAction: follow these up by hand if needed\. An unconfirmed one may have arrived: check with them before re-sending\.$/);
+    expect(text).toMatch(/\n- and \d+ more\n\nAction: follow these up by hand if needed\. An unconfirmed one may have gone out: check before re-sending\.$/);
   });
 
   it("with nothing to list, says there's nothing to do", () => {
