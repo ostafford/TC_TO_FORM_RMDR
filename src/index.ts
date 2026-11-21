@@ -7,7 +7,7 @@ import { DEFAULT_SCHEME, verifyWebhookSignature } from "./connecteam/signature.j
 import { runDueSteps } from "./cron/dueSteps.js";
 import { creditSubmission } from "./crediting/credit.js";
 import { creditRules, readSettings, type Env } from "./env.js";
-import { WorkList } from "./store.js";
+import { WorkList, type DeliveryRecord } from "./store.js";
 import { isFormsDelivery, parseFormSubmissionDelivery } from "./webhook/formSubmission.js";
 import { isTaskDelivery, parseTaskDelivery } from "./webhook/task.js";
 import { parseTimeActivityDelivery } from "./webhook/timeActivity.js";
@@ -49,8 +49,10 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
       /**
        * Skip a delivery whose key is stored: Connecteam sent it again (#86).
        * The key is stored once it's handled, so a retry of a failure counts.
+       * Two copies arriving together can both get past the check; the writes
+       * are safe to repeat, so the second changes nothing.
        */
-      const once = async (d: { dedupeKey: string; eventType: string; userId: number | null }, handle: () => Promise<Response>) => {
+      const handleOnce = async (d: DeliveryRecord, handle: () => Promise<Response>) => {
         if (await store.seen(d.dedupeKey)) {
           log({ evt: "webhook", status: 200, eventType: d.eventType, userId: d.userId, skipped: "repeat" });
           return json(200, { ok: true, skipped: "repeat" });
@@ -63,7 +65,7 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
       if (isFormsDelivery(payload)) {
         const form = parseFormSubmissionDelivery(payload);
         if (form.kind === "malformed") return json(400, { error: "not a form submission delivery" });
-        return once(form, async () => {
+        return handleOnce(form, async () => {
           if (form.kind === "ignored") return json(200, { ok: true });
           const settings = readSettings(env);
           if (!settings.ok) {
@@ -82,7 +84,7 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
       if (isTaskDelivery(payload)) {
         const task = parseTaskDelivery(payload);
         if (task.kind === "malformed") return json(400, { error: "not a task delivery" });
-        return once({ ...task, userId: null }, async () => {
+        return handleOnce(task, async () => {
           if (task.kind === "ignored") return json(200, { ok: true });
           // An employee's tick, never a submission (#28): the cron reopens the task and sends the tick DM.
           // It needs no settings, so a Reminder Task turned off since still finishes its lifecycle.
@@ -95,7 +97,7 @@ export function createWorker(opts: WorkerOptions = {}): ExportedHandler<Env> {
       const delivery = parseTimeActivityDelivery(payload);
       if (delivery.kind === "malformed") return json(400, { error: "not a time activity delivery" });
 
-      return once(delivery, async () => {
+      return handleOnce(delivery, async () => {
         if (delivery.kind === "ignored") return json(200, { ok: true });
         // The Grace Period and accepted forms are fixed for the Shift when its end
         // is recorded, so a later settings change doesn't move a scheduled step.

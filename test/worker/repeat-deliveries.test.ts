@@ -95,6 +95,38 @@ describe("an identical delivery sent twice", () => {
   });
 });
 
+describe("a task delivery", () => {
+  it("is a repeat however its tasks are ordered", async () => {
+    setUp(ON);
+    await reminded();
+    const tasks = STAFF.map((u) => taskCompleted(taskOf(u), REMINDED + HOUR, "r-both").data[0]!);
+    const tick = taskCompleted(taskOf(JORDAN), REMINDED + HOUR, "r-both");
+
+    expect(await (await h.webhook({ ...tick, data: tasks })).json()).toEqual({ ok: true });
+    expect(await (await h.webhook({ ...tick, data: [...tasks].reverse() })).json()).toEqual({ ok: true, skipped: "repeat" });
+  });
+});
+
+describe("a delivery sharing a requestId with one handled, differing in one key field only", () => {
+  const out = () => clockOut(JORDAN, "r-key");
+  const form = () => formSubmission(submission(JORDAN), "form_submission", "r-key");
+  const tick = () => taskCompleted({ id: "task-1", boardId: "board-7", userIds: [JORDAN.userId], status: "completed", title: "t" }, REMINDED, "r-key");
+  const pair = <T extends object>(d: T, change: (d: T) => object) => [d, change(d)];
+
+  it.each([
+    ["time activity: eventType", () => pair(out(), (d) => ({ ...d, eventType: "auto_clock_out" }))],
+    ["time activity: user", () => pair(out(), (d) => ({ ...d, userId: SAM.userId }))],
+    ["time activity: activity", () => pair(out(), (d) => ({ ...d, timeActivity: { ...d.timeActivity, id: "ta-other" } }))],
+    ["form: eventType", () => pair(form(), (d) => ({ ...d, eventType: "form_submission_edited" }))],
+    ["form: user", () => pair(form(), (d) => ({ ...d, data: { ...d.data, submittingUserId: SAM.userId } }))],
+    ["form: submission", () => pair(form(), (d) => ({ ...d, data: { ...d.data, formSubmissionId: "s-other" } }))],
+    ["task: eventType", () => pair(tick(), (d) => ({ ...d, eventType: "task_published" }))],
+    ["task: tasks", () => pair(tick(), (d) => ({ ...d, data: [{ ...d.data[0]!, id: "task-other" }] }))],
+  ])("is handled: %s", async (_, deliveries) => {
+    for (const d of deliveries()) expect(await (await h.webhook(d)).json()).toEqual({ ok: true });
+  });
+});
+
 describe("two different events sharing one requestId", () => {
   it("are both handled for time activity deliveries", async () => {
     for (const u of STAFF) await h.webhook(clockOut(u, "r-shared"));

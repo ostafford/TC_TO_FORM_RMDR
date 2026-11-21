@@ -170,7 +170,10 @@ export type StateKey =
 
 /** What the lost-webhook alert reads (#34). */
 export interface WebhookHealth {
-  /** When the last webhook delivery arrived, or `null` for never. */
+  /**
+   * When the last webhook delivery was handled, or `null` for never. One
+   * refused for incomplete settings doesn't count, but no alert runs then.
+   */
   lastDelivery: number | null;
   /** Shift Segments the sweep found that no webhook told us of, in the window. */
   missed: number;
@@ -178,6 +181,13 @@ export interface WebhookHealth {
   activity: boolean;
   /** When the first Shift was recorded: how long the Deployment has been watching. */
   watchingSince: number | null;
+}
+
+/** A webhook delivery as it's recorded, keyed for de-duplication (#86). */
+export interface DeliveryRecord {
+  dedupeKey: string;
+  eventType: string;
+  userId: number | null;
 }
 
 /** A Shift first known more than this long after its recorded end is never checked. */
@@ -195,8 +205,10 @@ export class WorkList {
   /**
    * Record a webhook delivery, for de-duplication and last-seen. Only once
    * it's fully handled, so Connecteam's retry of one that failed still counts.
+   * It isn't in the same batch as the delivery's own writes: those are safe
+   * to repeat, so a crash between the two only means a repeat is handled again.
    */
-  async recordDelivery(d: { dedupeKey: string; eventType: string; userId: number | null }, now: number): Promise<void> {
+  async recordDelivery(d: DeliveryRecord, now: number): Promise<void> {
     await this.db
       .prepare("INSERT OR IGNORE INTO webhook_deliveries (dedupe_key, event_type, user_id, received_at) VALUES (?, ?, ?, ?)")
       .bind(d.dedupeKey, d.eventType, d.userId, now)
