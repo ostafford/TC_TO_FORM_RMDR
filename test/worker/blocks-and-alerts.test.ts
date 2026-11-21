@@ -118,7 +118,8 @@ describe("a rejected API key", () => {
 
   it("revoked briefly, posts nothing at all: its alert never got through, and nothing was skipped", async () => {
     await clockOut();
-    h.ct.rejectKey();
+    // A 401 is read as a rejected key too, though live answers a revoked key with 403.
+    h.ct.rejectKey(401);
     for (let m = 0; m <= 15; m++) await h.tick(DUE + m * MINUTE);
     h.ct.recover();
     for (let m = 30; m <= 32; m++) await h.tick(DUE + m * MINUTE);

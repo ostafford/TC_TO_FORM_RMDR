@@ -1,4 +1,4 @@
-/** Quiet Hours clock maths (#29): a window across midnight or not, in the Deployment's zone, through daylight saving. */
+/** Quiet Hours clock maths (#29): the fixed window across midnight, in the Deployment's zone, through daylight saving. */
 import { describe, it, expect } from "vitest";
 import { inWindow, isQuiet, QUIET_HOURS, quietEnds } from "../src/escalation/quietHours.js";
 import { escalationSummaries, type SummaryEntry } from "../src/messages/escalation.js";
@@ -21,23 +21,12 @@ describe("inWindow", () => {
 });
 
 describe("isQuiet", () => {
-  it("runs across midnight when from is after until", () => {
+  it("runs across midnight", () => {
     expect(isQuiet(at("2026-10-06T09:59:00Z"), SYD, NIGHT)).toBe(false); // 8:59 pm AEDT
     expect(isQuiet(at("2026-10-06T10:00:00Z"), SYD, NIGHT)).toBe(true); // 9:00 pm
     expect(isQuiet(at("2026-10-06T15:00:00Z"), SYD, NIGHT)).toBe(true); // 2:00 am
     expect(isQuiet(at("2026-10-06T19:59:00Z"), SYD, NIGHT)).toBe(true); // 6:59 am
     expect(isQuiet(at("2026-10-06T20:00:00Z"), SYD, NIGHT)).toBe(false); // 7:00 am
-  });
-
-  it("stays within one day when from is before until", () => {
-    const early = { from: 60, until: 360 };
-    expect(isQuiet(at("2026-10-06T13:59:00Z"), SYD, early)).toBe(false); // 12:59 am
-    expect(isQuiet(at("2026-10-06T14:00:00Z"), SYD, early)).toBe(true); // 1:00 am
-    expect(isQuiet(at("2026-10-06T19:00:00Z"), SYD, early)).toBe(false); // 6:00 am
-  });
-
-  it("is never quiet with equal ends", () => {
-    expect(isQuiet(at("2026-10-06T15:00:00Z"), SYD, { from: 420, until: 420 })).toBe(false);
   });
 
   it("reads the Deployment's zone, not UTC", () => {

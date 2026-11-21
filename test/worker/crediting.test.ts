@@ -195,6 +195,24 @@ describe("one submission counts for one Shift only", () => {
     expect(escalations()[0]?.text).toContain("Shift: Mon 5 Oct");
   });
 
+  it("two credits racing for one submission: the later write leaves it where the first put it", async () => {
+    await missed(MON);
+    const s = submit({ submissionTimestamp: TUE.start + HOUR });
+    // The webhook knows only Monday's Shift, so it picks the Missed Form. Before
+    // it writes, Tuesday's clock-out arrives and Tuesday's own check credits it.
+    h.beforeCredit(async () => {
+      await clockOut(TUE);
+      await h.tick(TUE.end + GRACE);
+    });
+    const res = await h.webhook(formSubmission(s), { at: TUE.start + 2 * HOUR });
+
+    expect(res.status).toBe(200);
+    expect(remindersTo()).toHaveLength(1);
+    await h.tick(MON.end + GRACE + LONG);
+    expect(escalations()).toHaveLength(1);
+    expect(escalations()[0]?.text).toContain("Shift: Mon 5 Oct");
+  });
+
   it("a second submission closes the second Missed Form", async () => {
     await missed(MON);
     await missed(TUE);

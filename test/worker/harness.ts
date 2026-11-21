@@ -19,13 +19,40 @@ export async function resetDb(): Promise<void> {
 
 export function harness(settings: Partial<Record<string, string>> = {}) {
   const ct = new FakeConnecteam();
+  let beforeCredit: (() => Promise<void>) | null = null;
+  // Runs `beforeCredit` once, just before the next credit write reaches the database.
+  const DB = new Proxy(env.DB, {
+    get(db, key) {
+      if (key !== "batch") {
+        const v = Reflect.get(db, key, db);
+        return typeof v === "function" ? v.bind(db) : v;
+      }
+      return async (statements: D1PreparedStatement[]) => {
+        const sql = (statements[0] as { statement?: string } | undefined)?.statement ?? "";
+        if (beforeCredit && sql.trimStart().startsWith("UPDATE shifts SET status = 'submitted'")) {
+          const hook = beforeCredit;
+          beforeCredit = null;
+          await hook();
+        }
+        return db.batch(statements);
+      };
+    },
+  });
   // The test Deployment's settings (vitest.config.ts), with any overrides.
-  let workerEnv = { ...env, ...settings } as typeof env;
+  let workerEnv = { ...env, DB, ...settings } as typeof env;
   let arrival = 0;
   const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 
   return {
     ct,
+
+    /**
+     * Run `hook` just before the Worker next credits a submission to a Shift,
+     * after it has chosen which: for racing two credits of one submission.
+     */
+    beforeCredit(hook: () => Promise<void>) {
+      beforeCredit = hook;
+    },
 
     /** Change settings from now on, as rerunning a setup step and redeploying does. */
     configure(more: Partial<Record<string, string>>) {
@@ -44,6 +71,22 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
       const body = typeof payload === "string" ? payload : JSON.stringify(payload);
       const res = await worker.fetch!(
         new Request("https://worker.example/webhook", { method: "POST", body, headers }) as Request<
+          unknown,
+          IncomingRequestCfProperties
+        >,
+        workerEnv,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+      return res;
+    },
+
+    /** Any request other than a webhook delivery, signed, with `payload` as its body when given. */
+    async request(method: string, path: string, payload?: unknown) {
+      const ctx = createExecutionContext();
+      const body = payload === undefined ? null : JSON.stringify(payload);
+      const res = await worker.fetch!(
+        new Request(`https://worker.example${path}`, { method, body, headers: { "x-webhook-secret": SECRET } }) as Request<
           unknown,
           IncomingRequestCfProperties
         >,

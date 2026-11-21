@@ -1,7 +1,7 @@
 /**
  * What the setup wizard's people and channel steps (#39, user stories 42 to
- * 46) make of Connecteam's users, publishers, task boards and chats, and
- * the support link's values. Pure, so the rules are tested without a network.
+ * 46) make of Connecteam's users, publishers, task boards and chats. Pure, so
+ * the rules are tested without a network.
  *
  * Shapes tested live 2026-10-24 on the demo account (#39): `GET
  * /users/v1/users` lists owners (`userType: "owner"`), and the direct manager

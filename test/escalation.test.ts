@@ -4,7 +4,7 @@ import { directManagerId, escalationRecipients } from "../src/escalation/recipie
 import { escalation, type EscalationInput } from "../src/messages/escalation.js";
 import { MAX_MESSAGE } from "../src/messages/format.js";
 
-// Mon 20 Oct 2026, 9:00 am to 5:02 pm in Sydney (AEDT, UTC+11).
+// Tue 20 Oct 2026, 9:00 am to 5:02 pm in Sydney (AEDT, UTC+11).
 const SYD_9AM = Date.UTC(2026, 9, 19, 22, 0) / 1000;
 const SYD_502PM = Date.UTC(2026, 9, 20, 6, 2) / 1000;
 

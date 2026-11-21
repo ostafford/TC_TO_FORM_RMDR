@@ -690,7 +690,7 @@ const FIRST_RUN = [
   "", "y", "y", // test: the owner, send, arrived
 ].join("\n") + "\n";
 
-describe("steps 16 to 18: summary, turn it on, test message (a whole first run)", { timeout: 180_000 }, () => {
+describe("steps 14 to 17: tip, summary, turn it on, test message (a whole first run)", { timeout: 180_000 }, () => {
   beforeEach(() => {
     answers = [{ status: 200, dayLimit: 20_000 }];
     dmAnswer = { status: 200 };
@@ -708,7 +708,15 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     const v = saved(env);
     const url = "https://clock-out-form-reminder.test.workers.dev/webhook";
 
-    // 16: every setting, by name.
+    // 14: the Shift Entry tip says what it does and what it doesn't (US 46).
+    expect(flat(r.out)).toContain(
+      "It helps staff who forget: it reminds them while they're still on site. It does nothing about staff who answer Yes without submitting. " +
+        "The reminder never reads the answer, and catches those either way, because it checks for the real form.",
+    );
+    expect(flat(r.out)).toContain('open Time Clock > Settings > Shift Entries, and add a required question under "During shift or before clocking out"');
+    expect(flat(r.out)).toContain('"Have you submitted the Daily Compliance Form?" with the answers Yes and No.');
+
+    // 15: every setting, by name.
     expect(r.out).toMatch(/Compliance Form \.{3,} Daily Compliance Form/);
     expect(r.out).toMatch(/Shift date question \.{3,} Which shift is this form for\?/);
     expect(r.out).toMatch(/Quiet hours \.{3,} 9:00 pm to 7:00 am/);
@@ -716,7 +724,7 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     expect(r.out).toMatch(/Reminder task \.{3,} on, board "Task Management"/);
     expect(r.out).toMatch(/Alerts channel \.{3,} Managers \(channel\)/);
 
-    // 17: database, checked config, migrations, deploy, then secrets.
+    // 16: database, checked config, migrations, deploy, then secrets.
     expect(v.D1_DATABASE_ID).toBe("11111111-2222-3333-4444-555555555555");
     expect(v.CT_WEBHOOK_SECRET).toMatch(/^[0-9a-f]{64}$/);
     const calls = cf.log();
@@ -741,7 +749,7 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     for (const w of ours) expect(w).toMatchObject({ secretKey: v.CT_WEBHOOK_SECRET, isDisabled: false });
     expect((ours[0]!.eventTypes as string[]).some((e) => e.startsWith("user_") || e.startsWith("admin_declined"))).toBe(false);
 
-    // 18: one real Reminder to the owner, as the publisher.
+    // 17: one real Reminder to the owner, as the publisher.
     expect(dms).toHaveLength(1);
     expect(dms[0]!.userId).toBe(1);
     expect(dms[0]!.body.senderId).toBe(2480518);
@@ -766,6 +774,25 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
     rmSync(cf.dir, { recursive: true });
   });
 
+  it('answering "n" at the summary stops with nothing live: no database, deploy, secrets, webhooks or message (US 47)', async () => {
+    webhooks = [];
+    webhookCalls.length = 0;
+    dms.length = 0;
+    const cf = fakeWrangler();
+    const env = tempEnv();
+    const r = await run([], FIRST_RUN.replace("\n\ny\n\n", "\n\nn\n\n"), env, cf.env);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Stage 15/17 · Check your settings");
+    expect(r.out).toContain("Stopped. Nothing went live.");
+    expect(r.out).not.toContain("Turn it on");
+    expect(cf.log()).not.toMatch(/d1 create|d1 migrations|deploy|secret put/);
+    expect(webhookCalls).toEqual([]);
+    expect(dms).toEqual([]);
+    expect(saved(env).D1_DATABASE_ID).toBeUndefined();
+    expect(saved(env).CT_WEBHOOK_SECRET).toBeUndefined();
+    rmSync(cf.dir, { recursive: true });
+  });
+
   it("rerun after a first run stopped before the secrets: the live Worker missing one isn't refused, and both are stored (#80)", async () => {
     webhooks = [];
     dms.length = 0;
@@ -781,7 +808,7 @@ describe("steps 16 to 18: summary, turn it on, test message (a whole first run)"
   });
 });
 
-describe("step 18 on its own (--step test)", { timeout: SLOW }, () => {
+describe("step 17 on its own (--step test)", { timeout: SLOW }, () => {
   const ready = () =>
     envWithKey(
       [
@@ -830,6 +857,18 @@ describe("step 18 on its own (--step test)", { timeout: SLOW }, () => {
 });
 
 describe("step 1, the Cloudflare account (the parts after the browser)", { timeout: SLOW }, () => {
+  it("answering no to Workers Paid stops the wizard before it signs in or asks anything more (US 49)", async () => {
+    const cf = fakeWrangler();
+    const env = tempEnv();
+    const r = await run([], "\nn\n", env, cf.env);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("Upgrade to Workers Paid on the page above, then run this again.");
+    expect(r.out).not.toContain("Stage 2/17");
+    expect(cf.log()).toBe("");
+    expect(existsSync(env)).toBe(false);
+    rmSync(cf.dir, { recursive: true });
+  });
+
   it("shows only the account table, and says plainly when wrangler's sign-in is missing permissions", async () => {
     // As wrangler 4 prints it, with the warning it adds when the token lacks a scope.
     const whoami = [
@@ -859,7 +898,7 @@ describe("step 1, the Cloudflare account (the parts after the browser)", { timeo
   });
 });
 
-describe("step 18's picker, with more than one owner", { timeout: SLOW }, () => {
+describe("step 17's picker, with more than one owner", { timeout: SLOW }, () => {
   it("Enter with nothing typed asks for part of a name", async () => {
     const before = USERS;
     USERS = [...USERS, { userId: 7, firstName: "Second", lastName: "Owner", userType: "owner", isArchived: false, customFields: [] }];

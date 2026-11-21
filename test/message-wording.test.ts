@@ -3,7 +3,7 @@ import { reminderShiftEnded, reminderStillOpen, type ReminderInput } from "../sr
 import { formatDuration, formatShift, MAX_MESSAGE } from "../src/messages/format.js";
 import { reminderTaskDescription, reminderTaskTitle, tickDm, type ReminderTaskInput } from "../src/messages/reminderTask.js";
 
-// Mon 20 Oct 2026, 9:00 am to 5:02 pm in Sydney (AEDT, UTC+11).
+// Tue 20 Oct 2026, 9:00 am to 5:02 pm in Sydney (AEDT, UTC+11).
 const SYD_9AM = Date.UTC(2026, 9, 19, 22, 0) / 1000;
 const SYD_502PM = Date.UTC(2026, 9, 20, 6, 2) / 1000;
 
@@ -17,6 +17,11 @@ const sample: ReminderInput = {
 };
 
 const long = (n: number) => "W".repeat(n);
+
+describe("MAX_MESSAGE", () => {
+  // The wording tests below measure against it, so it must stay the Spec's 500.
+  it("is 500 characters", () => expect(MAX_MESSAGE).toBe(500));
+});
 
 describe("Reminder (Shift ended)", () => {
   it("reads as the variant D wording", () => {
