@@ -12,6 +12,7 @@ import type { TimeActivity } from "../connecteam/types.js";
 export type TimeActivityDelivery =
   | {
       kind: "segment";
+      webhook: "time_activity";
       dedupeKey: string;
       eventType: string;
       userId: number;
@@ -19,13 +20,13 @@ export type TimeActivityDelivery =
       activity: TimeActivity;
     }
   /** A saved Shift Segment was deleted. */
-  | { kind: "deleted"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
+  | { kind: "deleted"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
   /** A manual break was started, ended, added or edited. */
-  | { kind: "break"; dedupeKey: string; eventType: string; userId: number; activity: TimeActivity }
+  | { kind: "break"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number; activity: TimeActivity }
   /** A manual break was deleted. */
-  | { kind: "breakDeleted"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
+  | { kind: "breakDeleted"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
   /** Verified and recorded, but not an event this build acts on. */
-  | { kind: "ignored"; dedupeKey: string; eventType: string; userId: number | null }
+  | { kind: "ignored"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number | null }
   | { kind: "malformed" };
 
 /**
@@ -49,15 +50,15 @@ export function parseTimeActivityDelivery(payload: unknown): TimeActivityDeliver
   const dedupeKey = [String(o.requestId ?? ""), eventType, String(userId ?? ""), activityId].join("|");
 
   const isBreak = o.activityType === "manual_break";
-  if (o.activityType !== "shift" && !isBreak) return { kind: "ignored", dedupeKey, eventType, userId };
+  if (o.activityType !== "shift" && !isBreak) return { kind: "ignored", webhook: "time_activity", dedupeKey, eventType, userId };
 
   if (DELETE_EVENTS.test(eventType)) {
     if (!activityId) return { kind: "malformed" };
-    return { kind: isBreak ? "breakDeleted" : "deleted", dedupeKey, eventType, userId, timeActivityId: activityId };
+    return { kind: isBreak ? "breakDeleted" : "deleted", webhook: "time_activity", dedupeKey, eventType, userId, timeActivityId: activityId };
   }
 
   if (!SEGMENT_EVENTS.has(eventType) && !APPROVED.test(eventType)) {
-    return { kind: "ignored", dedupeKey, eventType, userId };
+    return { kind: "ignored", webhook: "time_activity", dedupeKey, eventType, userId };
   }
 
   const start = punch(ta?.start);
@@ -67,12 +68,13 @@ export function parseTimeActivityDelivery(payload: unknown): TimeActivityDeliver
 
   const activity: TimeActivity = { id: activityId, start };
   if (end) activity.end = end;
-  if (isBreak) return { kind: "break", dedupeKey, eventType, userId, activity };
+  if (isBreak) return { kind: "break", webhook: "time_activity", dedupeKey, eventType, userId, activity };
   if (typeof ta.schedulerShiftId === "string" && ta.schedulerShiftId) activity.schedulerShiftId = ta.schedulerShiftId;
   if (typeof ta.isAutoClockOut === "boolean") activity.isAutoClockOut = ta.isAutoClockOut;
 
   return {
     kind: "segment",
+    webhook: "time_activity",
     dedupeKey,
     eventType,
     userId,

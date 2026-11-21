@@ -119,6 +119,11 @@ npm run db:migrate
 npm run deploy
 ```
 
+Always in that order: a release's code expects its own migrations applied.
+Deployed first, it can answer every webhook with a 500 until they are (0014,
+#81, adds a column each delivery is recorded with), and Connecteam retries a
+delivery at most 3 times before it's lost.
+
 ### After the Integrator Relay was removed (#67)
 
 The support link and its relay are gone, and Quiet Hours are always 9 pm to
