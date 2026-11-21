@@ -22,6 +22,9 @@ const BACK = syd(12, 30);
 const END = syd(17, 2);
 
 const CLOCK = 67;
+const SCHEDULER = 16396569;
+const SHIFT_ID = "6a4765acf53a91b0ea084fb4:74692f68-51e8-4e4e-a8c8-cd4ac8918446";
+const PLANNED_END = syd(17);
 const JORDAN = { userId: 501, firstName: "Jordan", lastName: "Lee" };
 const user = JORDAN.userId;
 
@@ -109,6 +112,29 @@ describe("a Shift the webhook missed", () => {
     expect(h.ct.dms).toEqual([]);
   });
 
+  it("linked to a Scheduled Shift and still clocked in gets the 'still clocked in' Reminder after its planned end (#92)", async () => {
+    h.ct.addScheduler(SCHEDULER).addScheduledShift({ schedulerId: SCHEDULER, id: SHIFT_ID, start: START, end: PLANNED_END, userId: user });
+    h.ct.addRecord(shift("ta-1", START, undefined, { schedulerShiftId: SHIFT_ID }));
+    await minutes(START + SETTLE, 2);
+    expect(found()).toBe(1);
+    await h.tick(PLANNED_END);
+    await h.tick(PLANNED_END + GRACE);
+    // The planned end could only come from the stored link.
+    expect(h.ct.dms).toHaveLength(1);
+    expect(h.ct.dms[0]?.text).toContain("You're still clocked in");
+    expect(h.ct.dms[0]?.text).toContain("Shift: Tue 6 Oct, 9:00 am, scheduled to end 5:00 pm\n");
+  });
+
+  it("ended by Connecteam's own auto clock-out at its planned end gets the usual check (#92)", async () => {
+    h.ct.addScheduler(SCHEDULER).addScheduledShift({ schedulerId: SCHEDULER, id: SHIFT_ID, start: START, end: PLANNED_END, userId: user });
+    h.ct.addRecord(shift("ta-1", START, PLANNED_END, { schedulerShiftId: SHIFT_ID, isAutoClockOut: true }));
+    await h.tick(PLANNED_END + SETTLE);
+    await h.tick(PLANNED_END + GRACE);
+    expect(checks().map((c) => c.query.submittingEndTime)).toEqual([String(PLANNED_END + GRACE)]);
+    expect(h.ct.dms).toHaveLength(1);
+    expect(h.ct.dms[0]?.text).toContain("Shift: Tue 6 Oct, 9:00 am – 5:00 pm\n");
+  });
+
   it("ended more than 24 hours before the sweep found it is never checked", async () => {
     const yesterdayEnd = END - 25 * HOUR;
     h.ct.addRecord(shift("ta-1", yesterdayEnd - 8 * HOUR, yesterdayEnd));
@@ -154,6 +180,16 @@ describe("a Shift the webhook told us about", () => {
 });
 
 describe("reading the time clocks", () => {
+  it("finds a record by its local start date: yesterday from midnight in its own time zone (#92)", async () => {
+    // 11:30 pm on Sun 4 Oct, and 12:30 am on Mon 5 Oct, in Sydney: both are 4 Oct in UTC.
+    const lateSunday = Date.UTC(2026, 9, 4, 12, 30) / 1000;
+    const earlyMonday = Date.UTC(2026, 9, 4, 13, 30) / 1000;
+    h.ct.addRecord(shift("ta-sunday", lateSunday, lateSunday + 30 * MINUTE)).addRecord(shift("ta-monday", earlyMonday, earlyMonday + HOUR));
+    await h.tick(syd(9));
+    expect(reads().map((c) => [c.query.startDate, c.query.endDate])).toEqual([["2026-10-05", "2026-10-06"]]);
+    expect(logs.filter((l) => l.evt === "sweep_found").map((l) => l.timeActivityId)).toEqual(["ta-monday"]);
+  });
+
   it("asks for yesterday and today in the Deployment's time zone, one call per clock", async () => {
     await h.tick(syd(9)); // 22:00 the day before, in UTC
     expect(reads().map((c) => [c.query.startDate, c.query.endDate])).toEqual([["2026-10-05", "2026-10-06"]]);

@@ -68,6 +68,9 @@ export interface FakeRecord {
   end?: number;
   modifiedAt: number;
   timezone?: string;
+  /** Links the segment to its Scheduled Shift (#24). */
+  schedulerShiftId?: string;
+  isAutoClockOut?: boolean;
 }
 
 export interface SentDm {
@@ -327,10 +330,14 @@ export class FakeConnecteam {
       return json(200, { requestId: "r", data: { timeClocks: this.timeClocks } });
     }
 
-    // Every record on the clock, whatever the dates: tests assert the dates asked for.
+    // The clock's records whose start falls on a requested date, in the record's own time zone, as live (#92).
     const activities = path.match(/^\/time-clock\/v1\/time-clocks\/(\d+)\/time-activities$/);
     if (method === "GET" && activities) {
-      const mine = this.records.filter((r) => r.timeClockId === Number(activities[1]));
+      const inRange = (r: FakeRecord) => {
+        const day = new Intl.DateTimeFormat("en-CA", { timeZone: r.timezone ?? "Australia/Sydney" }).format(r.start * 1000);
+        return query.startDate! <= day && day <= query.endDate!;
+      };
+      const mine = this.records.filter((r) => r.timeClockId === Number(activities[1]) && inRange(r));
       const byUser = new Map<number, { userId: number; shifts: unknown[]; manualBreaks: unknown[]; timeOffs: unknown[] }>();
       for (const r of mine) {
         const u = byUser.get(r.userId) ?? { userId: r.userId, shifts: [], manualBreaks: [], timeOffs: [] };
@@ -341,7 +348,8 @@ export class FakeConnecteam {
           start: { timestamp: r.start, timezone: tz },
           end: r.end === undefined ? null : { timestamp: r.end, timezone: tz },
           modifiedAt: r.modifiedAt,
-          isAutoClockOut: false,
+          isAutoClockOut: r.isAutoClockOut ?? false,
+          ...(r.schedulerShiftId !== undefined ? { schedulerShiftId: r.schedulerShiftId } : {}),
         });
       }
       return json(200, { requestId: "r", data: { timeActivitiesByUsers: [...byUser.values()] } });
