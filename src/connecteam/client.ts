@@ -8,7 +8,7 @@
 /**
  * Connecteam API client. Auth is the `X-API-KEY` header.
  *
- *  - GET  /users/v1/users?userIds={id}                     (no single-user GET)
+ *  - GET  /users/v1/users?userIds={id}&userStatus=all      (no single-user GET)
  *  - GET  /users/v1/users?limit=500&offset={n}             (active users, paged)
  *  - GET  /forms/v1/forms/{formId}
  *  - GET  /forms/v1/forms/{formId}/form-submissions        (Unix-second window)
@@ -113,8 +113,12 @@ export class ConnecteamClient {
     return !!rl && rl.minuteRemaining !== null && rl.minuteLimit !== null && rl.minuteRemaining < rl.minuteLimit * MINUTE_HEADROOM;
   }
 
+  /**
+   * One user by id, archived or not: without `userStatus=all` an archived
+   * user comes back as `[]`, even asked for by id (tested live 2026-11-17, #82).
+   */
   async getUser(userId: number): Promise<CtResult<ConnecteamUser | null>> {
-    const r = await this.#call("GET", `/users/v1/users?userIds=${userId}&limit=1&offset=0`);
+    const r = await this.#call("GET", `/users/v1/users?userIds=${userId}&userStatus=all&limit=1&offset=0`);
     return unwrap(r, (b) => {
       const users = (b as Wrapped<{ users: ConnecteamUser[] }>).data.users;
       return users.find((u) => u.userId === userId) ?? null;

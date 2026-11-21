@@ -34,5 +34,7 @@ describe.skipIf(!live)("ConnecteamClient (live)", () => {
     if (r.outcome !== "ok") return;
     expect(r.data.some((u) => u.userType === "manager" || u.userType === "owner")).toBe(true);
     for (const u of r.data) expect(Array.isArray(u.customFields)).toBe(true);
+    // Only getUser asks for userStatus=all (#82); the list stays active users only.
+    expect(r.data.filter((u) => u.isArchived)).toEqual([]);
   });
 });
