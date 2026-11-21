@@ -7,7 +7,7 @@
  * 80% used alert too. Each alerts once and gets an all clear on recovery.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { ALERTS_CHANNEL, FORM_ID, harness, resetDb, timeActivity } from "./harness.js";
+import { ALERTS_CHANNEL, FORM_ID, formSubmission, harness, resetDb, taskCompleted, timeActivity } from "./harness.js";
 import type { FakeUser } from "./fake-connecteam.js";
 
 const MINUTE = 60;
@@ -314,6 +314,24 @@ describe("clock-outs not arriving", () => {
     await h.webhook(timeActivity({ eventType: "clock_in", userId: JORDAN.userId, id: "ta-new", start: next + 2 * MINUTE }));
     await h.tick(next + 3 * MINUTE);
     expect(posts()).toContain("ALL CLEAR\n\nClock-outs are arriving again.\n\nAction: none.");
+  });
+
+  it("alerts when only form and task webhooks arrive for 24 hours: they don't say clock-outs do (#81)", async () => {
+    await clockOut();
+    await h.tick(DUE); // the Reminder
+    const next = END + 25 * HOUR;
+    h.ct.addTimeClock(CLOCK).addRecord(record(AVERY.userId, "ta-later", next - 9 * HOUR, next - 10 * MINUTE));
+    const sub = { formSubmissionId: "s-1", formId: FORM_ID, submittingUserId: AVERY.userId, submissionTimestamp: next - 5 * MINUTE };
+    await h.webhook(formSubmission(sub));
+    await h.webhook(taskCompleted({ id: "task-x", boardId: "board-7", userIds: [AVERY.userId], status: "completed", title: "t" }, next - 4 * MINUTE));
+    await h.tick(next);
+    await h.tick(next + MINUTE);
+    expect(posts()).toContain(
+      "ALERT · CLOCK-OUTS NOT ARRIVING\n\n" +
+        "Since: 25 hours\n" +
+        "Effect: reminders still sent, up to a few minutes late\n\n" +
+        'Action: rerun setup step "Webhook".',
+    );
   });
 
   it("stays quiet for 2 missed, or a quiet day with no Shifts", async () => {

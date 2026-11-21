@@ -8,9 +8,9 @@
  */
 
 export type TaskDelivery =
-  | { kind: "completed"; dedupeKey: string; eventType: string; userId: null; taskIds: string[] }
+  | { kind: "completed"; webhook: "tasks"; dedupeKey: string; eventType: string; userId: null; taskIds: string[] }
   /** Verified and recorded, but not an event this build acts on. */
-  | { kind: "ignored"; dedupeKey: string; eventType: string; userId: null }
+  | { kind: "ignored"; webhook: "tasks"; dedupeKey: string; eventType: string; userId: null }
   | { kind: "malformed" };
 
 export function isTaskDelivery(payload: unknown): boolean {
@@ -27,9 +27,9 @@ export function parseTaskDelivery(payload: unknown): TaskDelivery {
   // Sorted, so a repeat listing the same tasks in another order has the same key.
   const dedupeKey = [String(o.requestId ?? ""), eventType, [...taskIds].sort().join(",")].join("|");
 
-  if (eventType !== "task_completed") return { kind: "ignored", dedupeKey, eventType, userId: null };
+  if (eventType !== "task_completed") return { kind: "ignored", webhook: "tasks", dedupeKey, eventType, userId: null };
   if (!tasks || taskIds.length !== tasks.length) return { kind: "malformed" };
-  return { kind: "completed", dedupeKey, eventType, userId: null, taskIds };
+  return { kind: "completed", webhook: "tasks", dedupeKey, eventType, userId: null, taskIds };
 }
 
 function asObject(v: unknown): Record<string, unknown> | undefined {

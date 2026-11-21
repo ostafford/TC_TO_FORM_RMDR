@@ -7,9 +7,9 @@
 import type { FormAnswer, FormSubmission } from "../connecteam/types.js";
 
 export type FormSubmissionDelivery =
-  | { kind: "submission"; dedupeKey: string; eventType: string; userId: number; submission: FormSubmission }
+  | { kind: "submission"; webhook: "forms"; dedupeKey: string; eventType: string; userId: number; submission: FormSubmission }
   /** Verified and recorded, but not an event this build acts on (an edit keeps its submitted time). */
-  | { kind: "ignored"; dedupeKey: string; eventType: string; userId: number | null }
+  | { kind: "ignored"; webhook: "forms"; dedupeKey: string; eventType: string; userId: number | null }
   | { kind: "malformed" };
 
 export function isFormsDelivery(payload: unknown): boolean {
@@ -25,7 +25,7 @@ export function parseFormSubmissionDelivery(payload: unknown): FormSubmissionDel
   const id = typeof d?.formSubmissionId === "string" ? d.formSubmissionId : "";
   const dedupeKey = [String(o.requestId ?? ""), eventType, String(userId ?? ""), id].join("|");
 
-  if (eventType !== "form_submission") return { kind: "ignored", dedupeKey, eventType, userId };
+  if (eventType !== "form_submission") return { kind: "ignored", webhook: "forms", dedupeKey, eventType, userId };
   if (!d || !id || userId === null || typeof d.formId !== "number" || typeof d.submissionTimestamp !== "number") {
     return { kind: "malformed" };
   }
@@ -38,7 +38,7 @@ export function parseFormSubmissionDelivery(payload: unknown): FormSubmissionDel
     answers: Array.isArray(d.answers) ? (d.answers.filter((a) => asObject(a)) as FormAnswer[]) : [],
   };
   if (typeof d.submissionTimezone === "string") submission.submissionTimezone = d.submissionTimezone;
-  return { kind: "submission", dedupeKey, eventType, userId, submission };
+  return { kind: "submission", webhook: "forms", dedupeKey, eventType, userId, submission };
 }
 
 function asObject(v: unknown): Record<string, unknown> | undefined {

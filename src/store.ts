@@ -171,7 +171,8 @@ export type StateKey =
 /** What the lost-webhook alert reads (#34). */
 export interface WebhookHealth {
   /**
-   * When the last webhook delivery was handled, or `null` for never. One
+   * When the last clock-out webhook delivery was handled, or `null` for never
+   * (#81): a form or task delivery doesn't say clock-outs are arriving. One
    * refused for incomplete settings doesn't count, but no alert runs then.
    */
   lastDelivery: number | null;
@@ -183,8 +184,15 @@ export interface WebhookHealth {
   watchingSince: number | null;
 }
 
+/** Which webhook a delivery came by, as its Connecteam feature type (#81). */
+export type DeliveryWebhook = "time_activity" | "forms" | "tasks";
+
+/** The clock-outs webhook: the only one the lost-webhook alert counts (#81). */
+const CLOCK_OUTS: DeliveryWebhook = "time_activity";
+
 /** A webhook delivery as it's recorded, keyed for de-duplication (#86). */
 export interface DeliveryRecord {
+  webhook: DeliveryWebhook;
   dedupeKey: string;
   eventType: string;
   userId: number | null;
@@ -210,8 +218,8 @@ export class WorkList {
    */
   async recordDelivery(d: DeliveryRecord, now: number): Promise<void> {
     await this.db
-      .prepare("INSERT OR IGNORE INTO webhook_deliveries (dedupe_key, event_type, user_id, received_at) VALUES (?, ?, ?, ?)")
-      .bind(d.dedupeKey, d.eventType, d.userId, now)
+      .prepare("INSERT OR IGNORE INTO webhook_deliveries (dedupe_key, webhook, event_type, user_id, received_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(d.dedupeKey, d.webhook, d.eventType, d.userId, now)
       .run();
   }
 
@@ -1208,12 +1216,12 @@ export class WorkList {
     const from = now - windowSeconds;
     const r = await this.db
       .prepare(
-        `SELECT (SELECT MAX(received_at) FROM webhook_deliveries) AS last_delivery,
+        `SELECT (SELECT MAX(received_at) FROM webhook_deliveries WHERE webhook = ?2) AS last_delivery,
                 (SELECT COUNT(*) FROM sweep_finds WHERE kind = 'segment' AND found_at > ?1) AS missed,
                 EXISTS (SELECT 1 FROM shift_segments WHERE start_at > ?1 OR end_at > ?1) AS activity,
                 (SELECT MIN(created_at) FROM shifts) AS watching_since`,
       )
-      .bind(from)
+      .bind(from, CLOCK_OUTS)
       .first<{ last_delivery: number | null; missed: number; activity: number; watching_since: number | null }>();
     return {
       lastDelivery: r?.last_delivery ?? null,
