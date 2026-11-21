@@ -265,10 +265,12 @@ export class FakeConnecteam {
 
     if (method === "GET" && path === "/users/v1/users") {
       const all = [...this.users.values()];
-      // Connecteam's default userStatus is `active`; asking by id finds archived users too.
+      // Connecteam's default userStatus is `active`, even when asking by id:
+      // an archived user comes back only with userStatus=all (tested live 2026-11-17).
+      const statused = query.userStatus === "all" ? all : all.filter((u) => !u.isArchived);
       const matched = query.userIds
-        ? all.filter((u) => query.userIds!.split(",").map(Number).includes(u.userId))
-        : all.filter((u) => !u.isArchived);
+        ? statused.filter((u) => query.userIds!.split(",").map(Number).includes(u.userId))
+        : statused;
       const offset = Number(query.offset ?? 0);
       const page = matched.slice(offset, offset + Number(query.limit ?? 10));
       const users = page.map(({ directManager, ...u }) => ({

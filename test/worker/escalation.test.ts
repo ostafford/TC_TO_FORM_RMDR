@@ -183,6 +183,12 @@ describe("recipients, read live at send time", () => {
     h.ct.users.get(JORDAN.userId)!.isArchived = true;
     await h.tick(ESCALATE);
     expect(escalations()[0]?.text).toContain("Employee: Jordan Lee\n");
+  });
+
+  it("still go to the direct manager of an employee archived since the Shift", async () => {
+    await reminded();
+    h.ct.users.get(JORDAN.userId)!.isArchived = true;
+    await h.tick(ESCALATE);
     expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId]);
   });
 });
