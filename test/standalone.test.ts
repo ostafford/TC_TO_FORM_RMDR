@@ -32,7 +32,7 @@ function specifiers(file: string): string[] {
 
 /** The package a bare specifier names: `@scope/name` or `name`. */
 const packageOf = (spec: string) => spec.split("/").slice(0, spec.startsWith("@") ? 2 : 1).join("/");
-const builtin = (spec: string) => spec.startsWith("node:") || builtinModules.includes(spec);
+const isBuiltin = (spec: string) => spec.startsWith("node:") || builtinModules.includes(spec);
 
 describe("the project stands alone (US 71)", () => {
   const files = [...sources("src"), ...sources("scripts")];
@@ -54,7 +54,7 @@ describe("the project stands alone (US 71)", () => {
   it("names only Node's own modules and packages it installs itself", () => {
     const unknown = files.flatMap((f) =>
       specifiers(f)
-        .filter((s) => !s.startsWith(".") && !builtin(s) && !s.startsWith("cloudflare:"))
+        .filter((s) => !s.startsWith(".") && !isBuiltin(s) && !s.startsWith("cloudflare:"))
         .filter((s) => !(packageOf(s) in installed))
         .map((s) => `${relative(root, f)}: ${s}`),
     );

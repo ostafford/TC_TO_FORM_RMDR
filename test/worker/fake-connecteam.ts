@@ -1,9 +1,9 @@
 /**
  * A fake Connecteam behind the real `ConnecteamClient`. It records every call
  * and answers like the API does: users (by id, or every active user paged),
- * forms, form submissions filtered by
- * user and an inclusive submitted-time window and sorted newest first, DMs, and Quick Tasks (create,
- * a full-replace update, delete; 404 for a task that never existed, and a
+ * forms, form submissions filtered by user and an inclusive submitted-time
+ * window and sorted newest first, DMs, and Quick Tasks (create, a
+ * full-replace update, delete; 404 for a task that never existed, and a
  * `PUT` on a deleted one answers 200 and changes nothing, as live), and time
  * clocks with their records for the sweep (#32). A scripted reply
  * (`failNext`) answers the next matching call instead, and a stalled one

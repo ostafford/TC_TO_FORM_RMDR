@@ -19,8 +19,6 @@ export async function resetDb(): Promise<void> {
 
 export function harness(settings: Partial<Record<string, string>> = {}) {
   const ct = new FakeConnecteam();
-  let beforeCredit: (() => Promise<void>) | null = null;
-  // Runs `beforeCredit` once, just before the next credit write reaches the database.
   const DB = new Proxy(env.DB, {
     get(db, key) {
       if (key !== "batch") {
@@ -29,9 +27,9 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
       }
       return async (statements: D1PreparedStatement[]) => {
         const sql = (statements[0] as { statement?: string } | undefined)?.statement ?? "";
-        if (beforeCredit && sql.trimStart().startsWith("UPDATE shifts SET status = 'submitted'")) {
-          const hook = beforeCredit;
-          beforeCredit = null;
+        if (h.beforeCredit && sql.trimStart().startsWith("UPDATE shifts SET status = 'submitted'")) {
+          const hook = h.beforeCredit;
+          h.beforeCredit = null;
           await hook();
         }
         return db.batch(statements);
@@ -43,16 +41,26 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
   let arrival = 0;
   const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 
-  return {
+  async function send(method: string, path: string, body: string | null, headers: Record<string, string>) {
+    const ctx = createExecutionContext();
+    const res = await worker.fetch!(
+      new Request(`https://worker.example${path}`, { method, body, headers }) as Request<unknown, IncomingRequestCfProperties>,
+      workerEnv,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return res;
+  }
+
+  const h = {
     ct,
 
     /**
-     * Run `hook` just before the Worker next credits a submission to a Shift,
+     * Runs once, just before the Worker next credits a submission to a Shift,
      * after it has chosen which: for racing two credits of one submission.
+     * Back to `null` once it has run.
      */
-    beforeCredit(hook: () => Promise<void>) {
-      beforeCredit = hook;
-    },
+    beforeCredit: null as (() => Promise<void>) | null,
 
     /** Change settings from now on, as rerunning a setup step and redeploying does. */
     configure(more: Partial<Record<string, string>>) {
@@ -64,37 +72,15 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
      * seconds after the payload's `eventTimestamp`, as a live delivery would.
      */
     async webhook(payload: unknown, opts: { at?: number; headers?: Record<string, string> } = {}) {
-      const headers = opts.headers ?? { "x-webhook-secret": SECRET };
       const stamp = (payload as { eventTimestamp?: unknown } | null)?.eventTimestamp;
       arrival = opts.at ?? (typeof stamp === "number" ? stamp + 5 : Math.floor(Date.now() / 1000));
-      const ctx = createExecutionContext();
       const body = typeof payload === "string" ? payload : JSON.stringify(payload);
-      const res = await worker.fetch!(
-        new Request("https://worker.example/webhook", { method: "POST", body, headers }) as Request<
-          unknown,
-          IncomingRequestCfProperties
-        >,
-        workerEnv,
-        ctx,
-      );
-      await waitOnExecutionContext(ctx);
-      return res;
+      return send("POST", "/webhook", body, opts.headers ?? { "x-webhook-secret": SECRET });
     },
 
     /** Any request other than a webhook delivery, signed, with `payload` as its body when given. */
     async request(method: string, path: string, payload?: unknown) {
-      const ctx = createExecutionContext();
-      const body = payload === undefined ? null : JSON.stringify(payload);
-      const res = await worker.fetch!(
-        new Request(`https://worker.example${path}`, { method, body, headers: { "x-webhook-secret": SECRET } }) as Request<
-          unknown,
-          IncomingRequestCfProperties
-        >,
-        workerEnv,
-        ctx,
-      );
-      await waitOnExecutionContext(ctx);
-      return res;
+      return send(method, path, payload === undefined ? null : JSON.stringify(payload), { "x-webhook-secret": SECRET });
     },
 
     /** Run the cron as if it fired at `atSeconds` (Unix seconds). */
@@ -104,6 +90,7 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
       await waitOnExecutionContext(ctx);
     },
   };
+  return h;
 }
 
 let requests = 0;

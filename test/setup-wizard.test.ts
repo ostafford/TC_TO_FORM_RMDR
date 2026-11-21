@@ -673,7 +673,7 @@ esac
 }
 
 /** Every answer a first-time setup takes, in order (Enter takes a default). */
-const FIRST_RUN = [
+const UP_TO_SUMMARY = [
   "", // banner
   "y", "y", // Workers Paid; the right account
   "ct-key-full", // API key
@@ -686,9 +686,14 @@ const FIRST_RUN = [
   "2480518", // publisher
   "Managers", // alerts channel
   "", // tip
+];
+const FIRST_RUN = [
+  ...UP_TO_SUMMARY,
   "y", // summary
   "", "y", "y", // test: the owner, send, arrived
 ].join("\n") + "\n";
+/** A first run that answers n at the summary. */
+const STOP_AT_SUMMARY = [...UP_TO_SUMMARY, "n"].join("\n") + "\n";
 
 describe("steps 14 to 17: tip, summary, turn it on, test message (a whole first run)", { timeout: 180_000 }, () => {
   beforeEach(() => {
@@ -780,7 +785,7 @@ describe("steps 14 to 17: tip, summary, turn it on, test message (a whole first 
     dms.length = 0;
     const cf = fakeWrangler();
     const env = tempEnv();
-    const r = await run([], FIRST_RUN.replace("\n\ny\n\n", "\n\nn\n\n"), env, cf.env);
+    const r = await run([], STOP_AT_SUMMARY, env, cf.env);
     expect(r.code).toBe(1);
     expect(r.out).toContain("Stage 15/17 · Check your settings");
     expect(r.out).toContain("Stopped. Nothing went live.");

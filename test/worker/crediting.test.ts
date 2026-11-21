@@ -200,12 +200,14 @@ describe("one submission counts for one Shift only", () => {
     const s = submit({ submissionTimestamp: TUE.start + HOUR });
     // The webhook knows only Monday's Shift, so it picks the Missed Form. Before
     // it writes, Tuesday's clock-out arrives and Tuesday's own check credits it.
-    h.beforeCredit(async () => {
+    h.beforeCredit = async () => {
       await clockOut(TUE);
       await h.tick(TUE.end + GRACE);
-    });
+    };
     const res = await h.webhook(formSubmission(s), { at: TUE.start + 2 * HOUR });
 
+    // The hook ran, so the two credits really raced.
+    expect(h.beforeCredit).toBeNull();
     expect(res.status).toBe(200);
     expect(remindersTo()).toHaveLength(1);
     await h.tick(MON.end + GRACE + LONG);
