@@ -41,6 +41,8 @@ export interface ShiftRow {
 export interface BreakWrite {
   eventType: string;
   userId: number;
+  /** The delivery's `eventTimestamp`; absent for a sweep write, which always applies (#83). */
+  eventAt?: number | null;
   activity: TimeActivity;
 }
 
@@ -48,6 +50,8 @@ export interface SegmentWrite {
   eventType: string;
   userId: number;
   timeClockId: number | null;
+  /** The delivery's `eventTimestamp`; absent for a sweep write, which always applies (#83). */
+  eventAt?: number | null;
   activity: TimeActivity;
 }
 
@@ -56,6 +60,12 @@ const LEASE_SECONDS = 5 * 60;
 
 /** The statuses of a Shift not yet checked: its times still follow its segments and breaks. */
 const UNCHECKED = "'open', 'grace'";
+
+/**
+ * An upsert's guard: the write is no older than the last delivery applied to
+ * the record (#83). A sweep write, or a record no delivery has stamped, passes.
+ */
+const NOT_OLDER = (table: string) => `excluded.event_at IS NULL OR ${table}.event_at IS NULL OR excluded.event_at >= ${table}.event_at`;
 
 /** How many merges one write may make across breaks: a Shift with this many breaks resumed out of order. */
 const MAX_JOINS = 10;
@@ -236,7 +246,9 @@ export class WorkList {
    *   itself (tested live 2026-10-21, #23).
    * - A segment resuming from a manual break joins the Shift the break started
    *   from (ADR-0001), whichever arrives first.
-   * - The segment's times are saved as sent, so an edit replaces them.
+   * - The segment's times are saved as sent, so an edit replaces them, unless
+   *   the delivery is older than the last one applied (#83). A sweep write
+   *   always applies.
    * - A Shift not yet checked (`open` or `grace`) takes its times from its
    *   segments and breaks, and once it has an end, its Grace Period is timed
    *   from that end. An edit before the check moves the Grace Period with it.
@@ -288,11 +300,13 @@ export class WorkList {
         .bind(a.schedulerShiftId ?? null, shiftId),
       this.db
         .prepare(
-          `INSERT INTO shift_segments (time_activity_id, shift_id, start_at, end_at) VALUES (?, ?, ?, ?)
+          `INSERT INTO shift_segments (time_activity_id, shift_id, start_at, end_at, event_at) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (time_activity_id) DO UPDATE SET
-             start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, shift_segments.end_at)`,
+             start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, shift_segments.end_at),
+             event_at = COALESCE(excluded.event_at, shift_segments.event_at)
+           WHERE ${NOT_OLDER("shift_segments")}`,
         )
-        .bind(a.id, shiftId, a.start.timestamp, endAt),
+        .bind(a.id, shiftId, a.start.timestamp, endAt, w.eventAt ?? null),
       ...this.#refreshTimes(shiftId, graceSeconds),
     ]);
     await this.#joinAcrossBreaks(w.userId, graceSeconds);
@@ -301,8 +315,9 @@ export class WorkList {
   /**
    * Record a manual break (#23): started, ended, added or edited. The Shift
    * whose last segment ends exactly where it starts stays open while it's
-   * open, and ends at its end if no segment resumes there (ADR-0001). One
-   * atomic batch, and safe to repeat.
+   * open, and ends at its end if no segment resumes there (ADR-0001). A
+   * delivery older than the last one applied is ignored (#83). One atomic
+   * batch, and safe to repeat.
    */
   async recordBreak(w: BreakWrite, opts: { gracePeriodMinutes: number; now: number }): Promise<void> {
     const a = w.activity;
@@ -311,11 +326,13 @@ export class WorkList {
     await this.db.batch([
       this.db
         .prepare(
-          `INSERT INTO manual_breaks (time_activity_id, user_id, start_at, end_at) VALUES (?, ?, ?, ?)
+          `INSERT INTO manual_breaks (time_activity_id, user_id, start_at, end_at, event_at) VALUES (?, ?, ?, ?, ?)
            ON CONFLICT (time_activity_id) DO UPDATE SET
-             start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, manual_breaks.end_at)`,
+             start_at = excluded.start_at, end_at = COALESCE(excluded.end_at, manual_breaks.end_at),
+             event_at = COALESCE(excluded.event_at, manual_breaks.event_at)
+           WHERE ${NOT_OLDER("manual_breaks")}`,
         )
-        .bind(a.id, w.userId, a.start.timestamp, a.end?.timestamp ?? null),
+        .bind(a.id, w.userId, a.start.timestamp, a.end?.timestamp ?? null, w.eventAt ?? null),
       ...(from ? this.#refreshTimes(from, graceSeconds) : []),
     ]);
     await this.#joinAcrossBreaks(w.userId, graceSeconds);
