@@ -39,16 +39,12 @@ export interface ShiftRow {
 
 /** A manual break, as the `time_activity` webhook sends it (#23), or as the sweep reads it (#32). */
 export interface BreakWrite {
-  /** `null` when the sweep found it: no webhook delivery to record. */
-  dedupeKey: string | null;
   eventType: string;
   userId: number;
   activity: TimeActivity;
 }
 
 export interface SegmentWrite {
-  /** `null` when the sweep found it: no webhook delivery to record. */
-  dedupeKey: string | null;
   eventType: string;
   userId: number;
   timeClockId: number | null;
@@ -174,7 +170,10 @@ export type StateKey =
 
 /** What the lost-webhook alert reads (#34). */
 export interface WebhookHealth {
-  /** When the last webhook delivery arrived, or `null` for never. */
+  /**
+   * When the last webhook delivery was handled, or `null` for never. One
+   * refused for incomplete settings doesn't count, but no alert runs then.
+   */
   lastDelivery: number | null;
   /** Shift Segments the sweep found that no webhook told us of, in the window. */
   missed: number;
@@ -184,15 +183,36 @@ export interface WebhookHealth {
   watchingSince: number | null;
 }
 
+/** A webhook delivery as it's recorded, keyed for de-duplication (#86). */
+export interface DeliveryRecord {
+  dedupeKey: string;
+  eventType: string;
+  userId: number | null;
+}
+
 /** A Shift first known more than this long after its recorded end is never checked. */
 export const BACKFILL_CUTOFF_SECONDS = 24 * 60 * 60;
 
 export class WorkList {
   constructor(private readonly db: D1Database) {}
 
-  /** Record a delivery that isn't a Shift Segment, for de-duplication and last-seen. */
-  async recordDelivery(d: { dedupeKey: string; eventType: string; userId: number | null }, now: number): Promise<void> {
-    await this.#delivery(d, now).run();
+  /** Whether a delivery with this key was already handled: Connecteam sent it again (#86). */
+  async seen(dedupeKey: string): Promise<boolean> {
+    const r = await this.db.prepare("SELECT 1 FROM webhook_deliveries WHERE dedupe_key = ?").bind(dedupeKey).first();
+    return r !== null;
+  }
+
+  /**
+   * Record a webhook delivery, for de-duplication and last-seen. Only once
+   * it's fully handled, so Connecteam's retry of one that failed still counts.
+   * It isn't in the same batch as the delivery's own writes: those are safe
+   * to repeat, so a crash between the two only means a repeat is handled again.
+   */
+  async recordDelivery(d: DeliveryRecord, now: number): Promise<void> {
+    await this.db
+      .prepare("INSERT OR IGNORE INTO webhook_deliveries (dedupe_key, event_type, user_id, received_at) VALUES (?, ?, ?, ?)")
+      .bind(d.dedupeKey, d.eventType, d.userId, now)
+      .run();
   }
 
   /**
@@ -236,7 +256,6 @@ export class WorkList {
     const graceSeconds = opts.gracePeriodMinutes * 60;
 
     await this.db.batch([
-      ...this.#deliveryOf(w, opts.now),
       this.db
         .prepare(
           `INSERT INTO shifts (id, user_id, time_clock_id, start_at, start_tz, scheduler_shift_id, form_ids, status, created_at)
@@ -282,7 +301,6 @@ export class WorkList {
     const from = await this.#shiftEndingAt(w.userId, a.start.timestamp);
     const graceSeconds = opts.gracePeriodMinutes * 60;
     await this.db.batch([
-      ...this.#deliveryOf(w, opts.now),
       this.db
         .prepare(
           `INSERT INTO manual_breaks (time_activity_id, user_id, start_at, end_at) VALUES (?, ?, ?, ?)
@@ -300,7 +318,7 @@ export class WorkList {
    * through it. A break never recorded changes nothing.
    */
   async deleteBreak(
-    d: { dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string },
+    d: { timeActivityId: string },
     opts: { gracePeriodMinutes: number; now: number },
   ): Promise<void> {
     const known = await this.db
@@ -309,7 +327,6 @@ export class WorkList {
       .first<{ user_id: number; start_at: number }>();
     const from = known ? await this.#shiftEndingAt(known.user_id, known.start_at) : null;
     await this.db.batch([
-      this.#delivery(d, opts.now),
       this.db.prepare("DELETE FROM manual_breaks WHERE time_activity_id = ?").bind(d.timeActivityId),
       ...(from ? this.#refreshTimes(from, opts.gracePeriodMinutes * 60) : []),
     ]);
@@ -427,7 +444,7 @@ export class WorkList {
    * changes nothing.
    */
   async deleteSegment(
-    d: { dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string },
+    d: { timeActivityId: string },
     opts: { gracePeriodMinutes: number; now: number },
   ): Promise<void> {
     const now = opts.now;
@@ -435,12 +452,8 @@ export class WorkList {
       .prepare("SELECT shift_id FROM shift_segments WHERE time_activity_id = ?")
       .bind(d.timeActivityId)
       .first<{ shift_id: string }>();
-    if (!known) {
-      await this.#delivery(d, now).run();
-      return;
-    }
+    if (!known) return;
     await this.db.batch([
-      this.#delivery(d, now),
       this.db.prepare("DELETE FROM shift_segments WHERE time_activity_id = ?").bind(d.timeActivityId),
       ...this.#refreshTimes(known.shift_id, opts.gracePeriodMinutes * 60),
       this.db
@@ -820,9 +833,8 @@ export class WorkList {
    * with the tick DM. A later tick, a tick after our own close (which sends
    * no webhook anyway) or any other Quick Task changes nothing.
    */
-  async recordTick(d: { dedupeKey: string; eventType: string; taskIds: string[] }, now: number): Promise<number> {
+  async recordTick(d: { taskIds: string[] }, now: number): Promise<number> {
     const results = await this.db.batch([
-      this.#delivery({ ...d, userId: null }, now),
       ...d.taskIds.map((taskId) =>
         this.db
           .prepare(
@@ -1292,10 +1304,6 @@ export class WorkList {
     return taken;
   }
 
-  #deliveryOf(d: { dedupeKey: string | null; eventType: string; userId: number | null }, now: number): D1PreparedStatement[] {
-    return d.dedupeKey === null ? [] : [this.#delivery({ ...d, dedupeKey: d.dedupeKey }, now)];
-  }
-
   #undelivered(u: Undelivered): D1PreparedStatement {
     return this.db
       .prepare(
@@ -1308,12 +1316,6 @@ export class WorkList {
 
   #sendDone(claimKey: string, now: number): D1PreparedStatement {
     return this.db.prepare("UPDATE send_claims SET state = 'done', done_at = ? WHERE claim_key = ?").bind(now, claimKey);
-  }
-
-  #delivery(d: { dedupeKey: string; eventType: string; userId: number | null }, now: number): D1PreparedStatement {
-    return this.db
-      .prepare("INSERT OR IGNORE INTO webhook_deliveries (dedupe_key, event_type, user_id, received_at) VALUES (?, ?, ?, ?)")
-      .bind(d.dedupeKey, d.eventType, d.userId, now);
   }
 }
 

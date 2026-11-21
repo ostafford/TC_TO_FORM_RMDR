@@ -113,10 +113,11 @@ export function manualBreak(opts: {
   start: number;
   end?: number;
   timezone?: string;
+  requestId?: string;
 }) {
   const timezone = opts.timezone ?? "Australia/Sydney";
   return {
-    requestId: `req-${++requests}`,
+    requestId: opts.requestId ?? `req-${++requests}`,
     company: "demo",
     eventTimestamp: opts.eventType === "clock_in" ? opts.start : (opts.end ?? opts.start),
     webhookVersion: 1,
@@ -135,9 +136,9 @@ export function manualBreak(opts: {
 }
 
 /** A delete delivery: it carries a bare `timeActivityId`, not a `timeActivity` (#2). */
-export function deletion(opts: { eventType?: string; userId: number; id: string; at: number }) {
+export function deletion(opts: { eventType?: string; userId: number; id: string; at: number; requestId?: string }) {
   return {
-    requestId: `req-${++requests}`,
+    requestId: opts.requestId ?? `req-${++requests}`,
     company: "demo",
     eventTimestamp: opts.at,
     webhookVersion: 1,
@@ -153,9 +154,9 @@ export function deletion(opts: { eventType?: string; userId: number; id: string;
  * A `task_completed` delivery as Connecteam sent it live on 2026-10-24 (#28):
  * `data` is an array, and nothing says who completed the task.
  */
-export function taskCompleted(t: FakeTask, at: number) {
+export function taskCompleted(t: FakeTask, at: number, requestId?: string) {
   return {
-    requestId: `req-${++requests}`,
+    requestId: requestId ?? `req-${++requests}`,
     company: "demo",
     activityType: "Task",
     eventTimestamp: at,
@@ -178,9 +179,9 @@ export function taskCompleted(t: FakeTask, at: number) {
 }
 
 /** A `form_submission` delivery as Connecteam sends it (#3): the submission sits in `data`. */
-export function formSubmission(s: FakeSubmission, eventType = "form_submission") {
+export function formSubmission(s: FakeSubmission, eventType = "form_submission", requestId?: string) {
   return {
-    requestId: `req-${++requests}`,
+    requestId: requestId ?? `req-${++requests}`,
     company: "demo",
     activityType: "forms",
     eventType,
