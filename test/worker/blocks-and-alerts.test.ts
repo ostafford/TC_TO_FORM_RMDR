@@ -88,6 +88,7 @@ describe("a rejected API key", () => {
     await h.tick(DUE + MINUTE);
 
     h.ct.recover();
+    h.ct.apiKey = "a-new-key";
     h.configure({ CT_API_KEY: "a-new-key" });
     await h.tick(DUE + 40 * MINUTE);
     expect(h.ct.dms.map((d) => d.userId)).toEqual([JORDAN.userId]);

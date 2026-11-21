@@ -18,7 +18,6 @@ export async function resetDb(): Promise<void> {
 }
 
 export function harness(settings: Partial<Record<string, string>> = {}) {
-  const ct = new FakeConnecteam();
   const DB = new Proxy(env.DB, {
     get(db, key) {
       if (key !== "batch") {
@@ -38,6 +37,7 @@ export function harness(settings: Partial<Record<string, string>> = {}) {
   });
   // The test Deployment's settings (vitest.config.ts), with any overrides.
   let workerEnv = { ...env, DB, ...settings } as typeof env;
+  const ct = new FakeConnecteam({ apiKey: workerEnv.CT_API_KEY });
   let arrival = 0;
   const worker = createWorker({ fetchImpl: ct.fetch, now: () => arrival });
 

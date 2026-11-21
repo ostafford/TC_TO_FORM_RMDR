@@ -19,6 +19,9 @@
  *
  * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
  * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
+ *
+ * A call without the account's `X-API-KEY` gets 401, as live (#91), so every
+ * test also proves the Worker sends it.
  */
 export interface RecordedCall {
   method: string;
@@ -77,6 +80,8 @@ const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 export class FakeConnecteam {
+  /** The key Connecteam accepts. A test rotating the key sets it as an Admin would. */
+  apiKey: string;
   readonly calls: RecordedCall[] = [];
   /** The sweep's reads: `GET /time-clock/...`. */
   readonly sweepCalls: RecordedCall[] = [];
@@ -189,6 +194,10 @@ export class FakeConnecteam {
   }
 
   /** The calls to one path, e.g. `"/forms/v1/forms/9001/form-submissions"`. */
+  constructor(opts: { apiKey: string }) {
+    this.apiKey = opts.apiKey;
+  }
+
   callsTo(method: string, path: string): RecordedCall[] {
     return this.calls.filter((c) => c.method === method && c.path === path);
   }
@@ -201,6 +210,7 @@ export class FakeConnecteam {
     url.searchParams.forEach((value, key) => (query[key] = value));
     const call: RecordedCall = { method, path: url.pathname, query, body };
     (url.pathname.startsWith("/time-clock/") ? this.sweepCalls : this.calls).push(call);
+    if (new Headers(init?.headers).get("x-api-key") !== this.apiKey) return json(401, { detail: "Invalid API key" });
 
     const stall = this.#stalls.findIndex((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
     if (stall !== -1) {
