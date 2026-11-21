@@ -147,6 +147,23 @@ describe("a Shift that ends in a break with no resume", () => {
     expect(h.ct.dms).toHaveLength(1);
   });
 
+  it("ignores a break edit older than one already applied, re-sent after it: the newer end stays (#83)", async () => {
+    await morningThenBreak();
+    await brk("clock_out", "br-1", LUNCH, LUNCH + 40 * MINUTE);
+    // The first edit's delivery got a 5xx, so it was never stored; Connecteam re-sends it after the second.
+    const edit = (end: number, at: number) => ({
+      ...manualBreak({ eventType: "admin_edit", userId: user, id: "br-1", start: LUNCH, end }),
+      eventTimestamp: at,
+    });
+    await h.webhook(edit(LUNCH + 30 * MINUTE, LUNCH + 50 * MINUTE));
+    await h.webhook(edit(LUNCH + 20 * MINUTE, LUNCH + 45 * MINUTE), { at: LUNCH + 55 * MINUTE });
+
+    await h.tick(LUNCH + 20 * MINUTE + GRACE);
+    expect(h.ct.calls).toEqual([]);
+    await h.tick(LUNCH + 30 * MINUTE + GRACE);
+    expect(checks().map((c) => c.query.submittingEndTime)).toEqual([String(LUNCH + 30 * MINUTE + GRACE)]);
+  });
+
   it("left open, with no Scheduled Shift, waits: no Reminder", async () => {
     await morningThenBreak();
     await h.tick(LUNCH + 24 * HOUR);

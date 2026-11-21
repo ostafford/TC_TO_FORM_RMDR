@@ -17,12 +17,22 @@ export type TimeActivityDelivery =
       eventType: string;
       userId: number;
       timeClockId: number | null;
+      /** The delivery's `eventTimestamp`: a write older than the last one applied is ignored (#83). */
+      eventAt: number | null;
       activity: TimeActivity;
     }
   /** A saved Shift Segment was deleted. */
   | { kind: "deleted"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
   /** A manual break was started, ended, added or edited. */
-  | { kind: "break"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number; activity: TimeActivity }
+  | {
+      kind: "break";
+      webhook: "time_activity";
+      dedupeKey: string;
+      eventType: string;
+      userId: number;
+      eventAt: number | null;
+      activity: TimeActivity;
+    }
   /** A manual break was deleted. */
   | { kind: "breakDeleted"; webhook: "time_activity"; dedupeKey: string; eventType: string; userId: number | null; timeActivityId: string }
   /** Verified and recorded, but not an event this build acts on. */
@@ -68,7 +78,8 @@ export function parseTimeActivityDelivery(payload: unknown): TimeActivityDeliver
 
   const activity: TimeActivity = { id: activityId, start };
   if (end) activity.end = end;
-  if (isBreak) return { kind: "break", webhook: "time_activity", dedupeKey, eventType, userId, activity };
+  const eventAt = typeof o.eventTimestamp === "number" ? o.eventTimestamp : null;
+  if (isBreak) return { kind: "break", webhook: "time_activity", dedupeKey, eventType, userId, eventAt, activity };
   if (typeof ta.schedulerShiftId === "string" && ta.schedulerShiftId) activity.schedulerShiftId = ta.schedulerShiftId;
   if (typeof ta.isAutoClockOut === "boolean") activity.isAutoClockOut = ta.isAutoClockOut;
 
@@ -79,6 +90,7 @@ export function parseTimeActivityDelivery(payload: unknown): TimeActivityDeliver
     eventType,
     userId,
     timeClockId: typeof o.timeClockId === "number" ? o.timeClockId : null,
+    eventAt,
     activity,
   };
 }

@@ -153,6 +153,19 @@ describe("an edit to a Shift", () => {
     expect(h.ct.dms[0]?.text).toContain("Shift: Tue 6 Oct, 9:00 am – 6:02 pm\n");
   });
 
+  it("older than one already applied, re-sent after it, is ignored: the newer times stay (#83)", async () => {
+    await h.webhook(event("clock_out"));
+    // The first edit's delivery got a 5xx, so it was never stored; Connecteam re-sends it after the second.
+    const first = { ...event("admin_edit", { end: END + 2 * HOUR }), eventTimestamp: END + 5 * MINUTE };
+    const second = { ...event("admin_edit", { end: END + HOUR }), eventTimestamp: END + 10 * MINUTE };
+    await h.webhook(second);
+    await h.webhook(first, { at: END + 15 * MINUTE });
+
+    await h.tick(END + HOUR + GRACE);
+    expect(checks().map((c) => c.query.submittingEndTime)).toEqual([String(END + HOUR + GRACE)]);
+    expect(h.ct.dms[0]?.text).toContain("Shift: Tue 6 Oct, 9:00 am – 6:02 pm\n");
+  });
+
   it("to the start before its check moves the submission window's start", async () => {
     await h.webhook(event("clock_out"));
     await h.webhook(event("admin_edit", { start: START - HOUR }), { at: END + 10 * MINUTE });
