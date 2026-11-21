@@ -37,6 +37,16 @@ describe("the webhook", () => {
     expect(h.ct.calls).toEqual([]);
   });
 
+  it("answers 404 to anything but POST /webhook, and nothing is scheduled", async () => {
+    expect((await h.request("GET", "/webhook")).status).toBe(404);
+    expect((await h.request("GET", "/")).status).toBe(404);
+    expect((await h.request("POST", "/", clockOut())).status).toBe(404);
+    expect((await h.request("POST", "/webhook/extra", clockOut())).status).toBe(404);
+
+    await h.tick(END + GRACE + MINUTE);
+    expect(h.ct.calls).toEqual([]);
+  });
+
   it("rejects a body that isn't JSON", async () => {
     expect((await h.webhook("{ not json")).status).toBe(400);
   });

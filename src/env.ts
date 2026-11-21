@@ -24,11 +24,11 @@ export interface Env {
   EXCLUDED_ADMIN_IDS?: string;
   /** Optional: the Compliance Form's date question naming the Shift a submission is for. */
   SHIFT_DATE_QUESTION_ID?: string;
-  /** "true" or "false"; blank reads as off. */
+  /** "true" or "false". Required: the deploy check refuses a blank one. */
   REMINDER_TASK_ENABLED?: string;
   /** Needed when REMINDER_TASK_ENABLED is "true". */
   TASK_BOARD_ID?: string;
-  /** "true" or "false"; blank reads as off. On is 9 pm to 7 am (#29). */
+  /** "true" or "false". Required: the deploy check refuses a blank one. On is 9 pm to 7 am (#29). */
   QUIET_HOURS_ENABLED?: string;
   /** The chat channel Failure Alerts are posted to (#33). */
   ALERTS_CHANNEL_ID: string;

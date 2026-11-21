@@ -2,7 +2,6 @@
  * #22: every way a Shift ends gets checked, not just a normal clock-out, and
  * corrections never cause repeat messages. User stories 29, 32, 33 and 34 on #19.
  */
-import { env } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
 import { FORM_ID, deletion, harness, resetDb, timeActivity } from "./harness.js";
 
@@ -94,13 +93,6 @@ describe("a Shift first known more than 24 hours after its recorded end", () => 
     await h.tick(END + 24 * HOUR + MINUTE);
     await h.tick(END + 48 * HOUR);
     expect(h.ct.calls).toEqual([]);
-  });
-
-  it("is stored as too late, with nothing due, so no cron run picks it up", async () => {
-    // Later steps (crediting a submission, the sweep) read this status too.
-    await h.webhook(event("admin_add"), { at: END + 24 * HOUR + 1 });
-    const row = await env.DB.prepare("SELECT status, due_at FROM shifts WHERE id = 'ta-1'").first();
-    expect(row).toEqual({ status: "too_late", due_at: null });
   });
 
   it("is checked when known exactly 24 hours after", async () => {

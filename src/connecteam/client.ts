@@ -16,7 +16,6 @@
  *  - GET  /scheduler/v1/schedulers
  *  - GET  /scheduler/v{1,2}/schedulers/{schedulerId}/shifts/{shiftId}
  *  - GET  /time-clock/v1/time-clocks/{id}/time-activities  (date window, no paging)
- *  - GET  /chat/v1/conversations
  *  - POST /chat/v1/conversations/privateMessage/{userId}   body { senderId, text }
  *  - POST /chat/v1/conversations/{conversationId}/message  body { senderId, text }
  *  - POST   /tasks/v1/taskboards/{boardId}/tasks           (returns the new task's `id`)
@@ -26,7 +25,6 @@
  */
 import { DEFAULT_TIMEOUT_MS, httpJson, type HttpResponse } from "../http/json.js";
 import type {
-  Conversation,
   CtResult,
   ConnecteamUser,
   Form,
@@ -233,11 +231,6 @@ export class ConnecteamClient {
         return [{ userId: o.userId, shifts: records(o.shifts), manualBreaks: records(o.manualBreaks) }];
       });
     });
-  }
-
-  async listConversations(): Promise<CtResult<Conversation[]>> {
-    const r = await this.#call("GET", `/chat/v1/conversations`);
-    return unwrap(r, (b) => (b as Wrapped<{ conversations: Conversation[] }>).data.conversations);
   }
 
   /** DM a user as the custom publisher. Text is clamped to 500 chars. Notes a missing publisher (#34). */

@@ -1,9 +1,9 @@
 /**
  * A fake Connecteam behind the real `ConnecteamClient`. It records every call
  * and answers like the API does: users (by id, or every active user paged),
- * forms, form submissions filtered by
- * user and an inclusive submitted-time window, DMs, and Quick Tasks (create,
- * a full-replace update, delete; 404 for a task that never existed, and a
+ * forms, form submissions filtered by user and an inclusive submitted-time
+ * window and sorted newest first, DMs, and Quick Tasks (create, a
+ * full-replace update, delete; 404 for a task that never existed, and a
  * `PUT` on a deleted one answers 200 and changes nothing, as live), and time
  * clocks with their records for the sweep (#32). A scripted reply
  * (`failNext`) answers the next matching call instead, and a stalled one
@@ -163,8 +163,8 @@ export class FakeConnecteam {
     return this;
   }
 
-  /** Answer every call with 401, as Connecteam does once the API key is revoked, until {@link recover}. */
-  rejectKey(status = 401): this {
+  /** Answer every call with 403, as Connecteam does once the API key is revoked, until {@link recover}. */
+  rejectKey(status = 403): this {
     for (const method of ["GET", "POST", "PUT", "DELETE"]) this.failAll(method, "/", status);
     return this;
   }
@@ -274,7 +274,9 @@ export class FakeConnecteam {
       const from = query.submittingStartTimestamp === undefined ? -Infinity : Number(query.submittingStartTimestamp);
       const to = query.submittingEndTime === undefined ? Infinity : Number(query.submittingEndTime);
       const limit = Number(query.limit ?? 10);
-      const rows = this.submissions
+      // Newest first, as live.
+      const rows = [...this.submissions]
+        .sort((a, b) => b.submissionTimestamp - a.submissionTimestamp)
         .filter(
           (s) =>
             s.formId === formId &&
