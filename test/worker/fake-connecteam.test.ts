@@ -14,10 +14,16 @@ describe("the fake Connecteam", () => {
     expect((await ct.fetch(URL, { headers: { "X-API-KEY": "the-key" } })).status).toBe(200);
   });
 
-  it.each([
-    ["no API key", {}],
-    ["the wrong API key", { "X-API-KEY": "another-key" }],
-  ])("answers 401 to a call with %s", async (_, headers) => {
-    expect((await ct.fetch(URL, { headers })).status).toBe(401);
+  // As tested live (fake-vs-reality research): a bad key is 403, a missing one 401.
+  it("answers 403 to a call with the wrong API key", async () => {
+    const res = await ct.fetch(URL, { headers: { "X-API-KEY": "another-key" } });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ detail: "Invalid API key" });
+  });
+
+  it("answers 401 to a call with no API key", async () => {
+    const res = await ct.fetch(URL, { headers: {} });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "No authentication provided" });
   });
 });

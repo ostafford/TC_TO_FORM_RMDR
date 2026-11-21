@@ -20,8 +20,8 @@
  * The sweep's time-clock reads go to `sweepCalls`, not `calls`, so `calls`
  * stays "what the Worker did about a Shift" for tests that aren't about the sweep.
  *
- * A call without the account's `X-API-KEY` gets 401, as live (#91), so every
- * test also proves the Worker sends it.
+ * A call with the wrong `X-API-KEY` gets 403 and one without it 401, as live
+ * (#91), so every test also proves the Worker sends the account's key.
  */
 export interface RecordedCall {
   method: string;
@@ -210,7 +210,9 @@ export class FakeConnecteam {
     url.searchParams.forEach((value, key) => (query[key] = value));
     const call: RecordedCall = { method, path: url.pathname, query, body };
     (url.pathname.startsWith("/time-clock/") ? this.sweepCalls : this.calls).push(call);
-    if (new Headers(init?.headers).get("x-api-key") !== this.apiKey) return json(401, { detail: "Invalid API key" });
+    const key = new Headers(init?.headers).get("x-api-key");
+    if (key === null) return json(401, { error: "No authentication provided" });
+    if (key !== this.apiKey) return json(403, { detail: "Invalid API key" });
 
     const stall = this.#stalls.findIndex((s) => s.method === method && url.pathname.startsWith(s.pathPrefix));
     if (stall !== -1) {
