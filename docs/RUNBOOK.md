@@ -160,6 +160,17 @@ request (`.github/workflows/test.yml`), the setup wizard's Bash tests
 included. `npm run test:integration` doesn't run there: it needs a real
 Connecteam API key in `.dev.vars`, so run it by hand.
 
+**Before a release, run `npm run test:integration`** against the demo
+account. It's read-only. Besides the calls the Worker makes, it checks the
+assumptions the fake Connecteam makes that matter most (#93): an archived
+user is found by id only with `userStatus=all`, form submissions come back
+newest first, time activities are filtered on each record's local start
+date, and a bad key gets 403. A failure there means Connecteam has changed
+and the fake no longer matches it, so the worker tests may pass while the
+live Worker misbehaves: fix the fake (and the code) before releasing. It
+needs an archived user, two submissions or more on the Compliance Form, and
+a time clock record in the last 60 days.
+
 ## Tearing down / starting over
 
 > **Deleting the Worker alone is not a reset.** Deleting
