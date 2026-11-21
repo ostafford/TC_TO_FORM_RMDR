@@ -215,6 +215,30 @@ describe("one submission counts for one Shift only", () => {
     expect(escalations()[0]?.text).toContain("Shift: Mon 5 Oct");
   });
 
+  it("two submissions racing for one Shift: the later write moves on to the next Missed Form", async () => {
+    setUp({ ESCALATION_DELAY_MINUTES: String(LONG / MINUTE), REMINDER_TASK_ENABLED: "true", TASK_BOARD_ID: "board-7" });
+    await missed(MON);
+    await missed(TUE);
+    // Just after Tuesday's Reminder, so neither task's hourly re-check is due yet.
+    const at = TUE.end + GRACE + 5 * MINUTE;
+    const first = submit({ submissionTimestamp: at - 2 * MINUTE });
+    const second = submit({ formSubmissionId: "s-2", submissionTimestamp: at - MINUTE });
+    // Both pick Monday's Missed Form, the oldest. Before the first writes, the second credits it.
+    h.beforeCredit = async () => {
+      await h.webhook(formSubmission(second), { at });
+    };
+    const res = await h.webhook(formSubmission(first), { at });
+
+    // The hook ran, so the two credits really raced.
+    expect(h.beforeCredit).toBeNull();
+    expect(res.status).toBe(200);
+    // Each Missed Form has its own submission now, so both Reminder Tasks close at once.
+    await h.tick(at + MINUTE);
+    expect([...h.ct.tasks.values()].map((t) => t.status)).toEqual(["completed", "completed"]);
+    await h.tick(TUE.end + GRACE + LONG);
+    expect(escalations()).toEqual([]);
+  });
+
   it("a second submission closes the second Missed Form", async () => {
     await missed(MON);
     await missed(TUE);
