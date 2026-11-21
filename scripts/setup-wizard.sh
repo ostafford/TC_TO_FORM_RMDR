@@ -856,8 +856,9 @@ s_sender() {
 s_alerts() {
   stage "Alerts channel"
   why "If the reminder itself has a problem (Connecteam is down, the key stops" \
-      "working, the form is deleted), it posts here, once per problem, with what" \
-      "to do. This is about the system, never about staff."
+      "working, the form is deleted), it posts here when the problem starts and" \
+      "again each day it lasts, with what to do. This is about the system, never" \
+      "about staff."
   todo "Type part of the chat's name to pick it, or 0 to create a new channel for problems." \
        "A new channel's members are the admins ticked in the escalations step."
   example "In \"Form Reminder Alerts\": \"ALERT · FORM NOT FOUND … Action: rerun setup" \
