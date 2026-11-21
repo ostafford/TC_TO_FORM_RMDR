@@ -174,6 +174,21 @@ describe("a setting pointing at something gone", () => {
     expect(posts()[1]).toBe("ALL CLEAR\n\nThe Compliance Form setting works again.\n\nAction: none.");
   });
 
+  it("the Compliance Form, still gone a day later: alerts again after 24 hours, and not before (#94)", async () => {
+    await clockOut();
+    h.ct.forms.delete(FORM_ID);
+    await h.tick(DUE);
+    await h.tick(DUE + MINUTE);
+    const alerts = () => posts().filter((t) => t.startsWith("ALERT · FORM NOT FOUND"));
+    expect(alerts()).toHaveLength(1);
+    // Re-checked every 15 minutes, still gone each time.
+    for (let t = DUE + 15 * MINUTE; t < DUE + 24 * HOUR; t += 15 * MINUTE) await h.tick(t);
+    expect(alerts()).toHaveLength(1);
+    for (let t = DUE + 24 * HOUR; t <= DUE + 24 * HOUR + 30 * MINUTE; t += 15 * MINUTE) await h.tick(t);
+    expect(alerts()).toHaveLength(2);
+    expect(posts()).not.toContainEqual(expect.stringContaining("ALL CLEAR"));
+  });
+
   it("the Compliance Form: lifts at a re-check if it's back", async () => {
     await clockOut();
     h.ct.forms.delete(FORM_ID);

@@ -63,7 +63,7 @@ An **Admin** the client has chosen at setup not to send Escalations to. Still re
 _Avoid_: muted, opted-out (both suggest the Admin chose it)
 
 **Failure Alert**:
-A message telling people the integration itself has a problem (a send that kept failing, a rejected API key, a setting that points at something gone, a lost webhook, the daily API allowance nearly used), as opposed to a staff member missing a form. Sent once per problem, with an "all clear" once it recovers.
+A message telling people the integration itself has a problem (a send that kept failing, a rejected API key, a setting that points at something gone, a lost webhook, the daily API allowance nearly used), as opposed to a staff member missing a form. Sent when a problem starts, again each day it lasts, and an 'all clear' once it recovers.
 _Avoid_: system alert, error notification
 
 **Alerts Channel**:
