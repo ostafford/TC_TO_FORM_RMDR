@@ -21,6 +21,9 @@ wrangler.deploy.json
 *.sqlite
 *.sqlite-*
 
+# the RUNBOOK's database export: holds employee names. Not *.sql: migrations/ is tracked
+backup.sql
+
 # setup wizard session logs (keys redacted, but still this Deployment's details)
 setup-wizard-*.log
 
