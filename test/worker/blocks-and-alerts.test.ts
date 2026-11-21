@@ -334,6 +334,21 @@ describe("clock-outs not arriving", () => {
     );
   });
 
+  it("counts Shifts, not segments: one missed Shift with two manual breaks stays quiet (#85)", async () => {
+    h.ct.addTimeClock(CLOCK);
+    const at = (hours: number) => START + hours * HOUR;
+    const brk = (id: string, start: number, end: number) => ({ ...record(JORDAN.userId, id, start, end), kind: "manual_break" as const });
+    h.ct
+      .addRecord(record(JORDAN.userId, "ta-1", START, at(2)))
+      .addRecord(brk("br-1", at(2), at(2.5)))
+      .addRecord(record(JORDAN.userId, "ta-2", at(2.5), at(5)))
+      .addRecord(brk("br-2", at(5), at(5.5)))
+      .addRecord(record(JORDAN.userId, "ta-3", at(5.5), END));
+    await h.tick(END + 10 * MINUTE);
+    await h.tick(END + 11 * MINUTE);
+    expect(posts().filter((t) => t.includes("CLOCK-OUTS"))).toEqual([]);
+  });
+
   it("stays quiet for 2 missed, or a quiet day with no Shifts", async () => {
     h.ct.addTimeClock(CLOCK);
     for (const [i, u] of [JORDAN, AVERY].entries()) h.ct.addRecord(record(u.userId, `ta-${i}`, START, END));

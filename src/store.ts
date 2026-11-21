@@ -176,7 +176,10 @@ export interface WebhookHealth {
    * refused for incomplete settings doesn't count, but no alert runs then.
    */
   lastDelivery: number | null;
-  /** Shift Segments the sweep found that no webhook told us of, in the window. */
+  /**
+   * Shifts the sweep found a segment of that no webhook told us of, in the
+   * window (#85): a Shift with breaks counts once, however many segments.
+   */
   missed: number;
   /** Whether any Shift Segment started or ended in the window. */
   activity: boolean;
@@ -1217,7 +1220,9 @@ export class WorkList {
     const r = await this.db
       .prepare(
         `SELECT (SELECT MAX(received_at) FROM webhook_deliveries WHERE webhook = ?2) AS last_delivery,
-                (SELECT COUNT(*) FROM sweep_finds WHERE kind = 'segment' AND found_at > ?1) AS missed,
+                (SELECT COUNT(DISTINCT COALESCE(ss.shift_id, f.time_activity_id))
+                 FROM sweep_finds f LEFT JOIN shift_segments ss ON ss.time_activity_id = f.time_activity_id
+                 WHERE f.kind = 'segment' AND f.found_at > ?1) AS missed,
                 EXISTS (SELECT 1 FROM shift_segments WHERE start_at > ?1 OR end_at > ?1) AS activity,
                 (SELECT MIN(created_at) FROM shifts) AS watching_since`,
       )
