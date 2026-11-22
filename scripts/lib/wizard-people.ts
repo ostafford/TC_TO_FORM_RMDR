@@ -11,7 +11,7 @@
  * lists `{ id, title, type: "team" | "channel" }`, 10 a page unless asked.
  */
 import type { ConnecteamUser, Conversation } from "../../src/connecteam/types.js";
-import { directManagerIds, isAdmin } from "../../src/escalation/recipients.js";
+import { directManagerIds, isActive, isAdmin } from "../../src/escalation/recipients.js";
 import { plainText } from "./wizard-forms.js";
 
 /** "Jordan Lee", or the id when the user has no name. */
@@ -34,13 +34,15 @@ export function adminRows(users: ConnecteamUser[]): AdminRow[] {
 
 /**
  * Whether the account uses direct managers: it has a `directManager` field,
- * and how many staff have one set. Escalations reach every direct manager,
- * even an unticked one (#25, #129).
+ * and how many staff have an active one set, as the Worker reads it.
+ * Escalations reach every active direct manager, even an unticked one (#25,
+ * #129, #131).
  */
 export function directManagers(users: ConnecteamUser[]): { field: boolean; set: number; staff: number } {
-  const staff = users.filter((u) => !u.isArchived && !isAdmin(u));
+  const staff = users.filter((u) => isActive(u) && !isAdmin(u));
+  const active = new Set(users.filter(isActive).map((u) => u.userId));
   const field = users.some((u) => (u.customFields ?? []).some((f) => f.type === "directManager"));
-  return { field, set: staff.filter((u) => directManagerIds(u).length > 0).length, staff: staff.length };
+  return { field, set: staff.filter((u) => directManagerIds(u).some((id) => active.has(id))).length, staff: staff.length };
 }
 
 /** One plain line about direct managers, for the recipients step. */

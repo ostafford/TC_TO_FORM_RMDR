@@ -13,9 +13,14 @@ import type { ConnecteamUser } from "../connecteam/types.js";
  */
 const ADMIN_TYPES = new Set(["manager", "owner"]);
 
+/** Whether this user can get Escalations at all: not archived (#131). */
+export function isActive(u: ConnecteamUser): boolean {
+  return !u.isArchived;
+}
+
 /** Whether this user gets Escalations unless excluded: an Admin, not archived. The setup wizard lists the same people (#39). */
 export function isAdmin(u: ConnecteamUser): boolean {
-  return ADMIN_TYPES.has(u.userType ?? "") && !u.isArchived;
+  return ADMIN_TYPES.has(u.userType ?? "") && isActive(u);
 }
 
 /**
@@ -55,7 +60,7 @@ export function escalationRecipients(opts: {
   const ids = opts.users
     .filter((u) => isAdmin(u) && !excluded.has(u.userId))
     .map((u) => u.userId);
-  const active = new Set(opts.users.filter((u) => !u.isArchived).map((u) => u.userId));
+  const active = new Set(opts.users.filter(isActive).map((u) => u.userId));
   ids.push(...directManagerIds(opts.employee).filter((id) => active.has(id)));
   return [...new Set(ids)].filter((id) => id !== opts.employee.userId);
 }

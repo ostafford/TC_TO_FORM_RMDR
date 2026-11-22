@@ -53,7 +53,12 @@ describe("directManagers", () => {
 
   it("counts a staff member whose first directManager field is blank but a second is set (#129)", () => {
     const second = { customFieldId: 10, name: "Site manager", type: "directManager", value: 1 };
-    expect(directManagers([user(4, "user", { customFields: [dm(null), second] })])).toEqual({ field: true, set: 1, staff: 1 });
+    expect(directManagers([user(1, "owner"), user(4, "user", { customFields: [dm(null), second] })])).toEqual({ field: true, set: 1, staff: 1 });
+  });
+
+  it("doesn't count a staff member whose only direct manager is archived (#131)", () => {
+    const d = directManagers([user(1, "owner", { isArchived: true }), user(4, "user", { customFields: [dm(1)] })]);
+    expect(d).toEqual({ field: true, set: 0, staff: 1 });
   });
 
   it("says so when the account has no such field, or no one has one set", () => {

@@ -190,9 +190,21 @@ describe("recipients, read live at send time", () => {
   it("leave out a direct manager archived since, as archived Admins are (#131)", async () => {
     await reminded();
     h.ct.users.get(MANAGER.userId)!.isArchived = true;
+    // Connecteam's answer to a DM to an archived user isn't tested live: say it
+    // refuses, so sending one would back off and end in a Failure Alert.
+    const toManager = `/chat/v1/conversations/privateMessage/${MANAGER.userId}`;
+    h.ct.failAll("POST", toManager, 400);
+    for (let m = 0; m <= 70; m++) await h.tick(ESCALATE + m * MINUTE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId]);
+    expect(h.ct.callsTo("POST", toManager)).toEqual([]);
+    expect(h.ct.posts).toEqual([]);
+  });
+
+  it("leave out a direct manager deleted since", async () => {
+    await reminded();
+    h.ct.users.delete(MANAGER.userId);
     await h.tick(ESCALATE);
     expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId]);
-    expect(h.ct.posts).toEqual([]);
   });
 
   it("still go to an active direct manager when another is archived", async () => {

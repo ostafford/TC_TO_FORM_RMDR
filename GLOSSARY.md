@@ -45,7 +45,7 @@ An optional Connecteam Quick Task assigned to the employee for a Missed Form. It
 _Avoid_: quick task (on its own, it's ambiguous with any other Quick Task)
 
 **Escalation**:
-The chat direct message sent to each **Admin** except **Excluded Admins**, and to each of the employee's direct managers where the account uses direct managers, when a Missed Form is still unsubmitted after a further configurable delay. It says who missed the form and for which Shift, never any form content.
+The chat direct message sent to each **Admin** except **Excluded Admins**, and to each of the employee's active direct managers where the account uses direct managers, when a Missed Form is still unsubmitted after a further configurable delay. It says who missed the form and for which Shift, never any form content.
 
 **Quiet Hours**:
 A nightly window, 9 pm to 7 am in the Deployment's time zone, during which Escalations wait. Fixed for every Deployment; each one only turns it on (the default) or off. Reminders, Reminder Tasks and Failure Alerts are never held.
