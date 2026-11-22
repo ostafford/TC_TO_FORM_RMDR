@@ -11,7 +11,7 @@
  * lists `{ id, title, type: "team" | "channel" }`, 10 a page unless asked.
  */
 import type { ConnecteamUser, Conversation } from "../../src/connecteam/types.js";
-import { directManagerId, isAdmin } from "../../src/escalation/recipients.js";
+import { directManagerIds, isAdmin } from "../../src/escalation/recipients.js";
 import { plainText } from "./wizard-forms.js";
 
 /** "Jordan Lee", or the id when the user has no name. */
@@ -34,20 +34,20 @@ export function adminRows(users: ConnecteamUser[]): AdminRow[] {
 
 /**
  * Whether the account uses direct managers: it has a `directManager` field,
- * and how many staff have one set. Escalations reach a direct manager even
- * when they're unticked (#25).
+ * and how many staff have one set. Escalations reach every direct manager,
+ * even an unticked one (#25, #129).
  */
 export function directManagers(users: ConnecteamUser[]): { field: boolean; set: number; staff: number } {
   const staff = users.filter((u) => !u.isArchived && !isAdmin(u));
   const field = users.some((u) => (u.customFields ?? []).some((f) => f.type === "directManager"));
-  return { field, set: staff.filter((u) => directManagerId(u) !== null).length, staff: staff.length };
+  return { field, set: staff.filter((u) => directManagerIds(u).length > 0).length, staff: staff.length };
 }
 
 /** One plain line about direct managers, for the recipients step. */
 export function directManagerLine(d: { field: boolean; set: number; staff: number }): string {
   if (!d.field) return "Direct managers: not used in this account, so escalations go to admins only.";
   if (d.set === 0) return "Direct managers: the field exists, but no one has one set yet, so escalations go to admins only for now.";
-  return `Direct managers: found. ${d.set} of ${d.staff} staff have one, who also gets their escalations.`;
+  return `Direct managers: found. ${d.set} of ${d.staff} staff have one, and direct managers also get their escalations.`;
 }
 
 /** The chat list's labels: the title, what kind it is, and the id where two share a title. */

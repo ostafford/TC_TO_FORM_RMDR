@@ -19,15 +19,18 @@ export function isAdmin(u: ConnecteamUser): boolean {
 }
 
 /**
- * The employee's direct manager: the value of their custom field whose type is
- * `directManager`, found by type, never by a hard-coded id. `null` when the
- * account has no such field or the employee's value is blank. The value is a
- * user id; a numeric string, a one-element array or `{ value }` is read too,
- * since the blank and set shapes aren't confirmed live (#5).
+ * The employee's direct managers: the values of their custom fields whose type
+ * is `directManager`, found by type, never by a hard-coded id. An account can
+ * create more than one such field, and each one counts (#129). None when the
+ * account has no such field or the employee's values are blank. A value is a
+ * user id (tested live 2026-11-22, #128); a numeric string, a one-element
+ * array or `{ value }` is read too, since the docs don't pin the shape.
  */
-export function directManagerId(employee: ConnecteamUser): number | null {
-  const field = (employee.customFields ?? []).find((f) => f.type === "directManager");
-  return field ? userId(field.value) : null;
+export function directManagerIds(employee: ConnecteamUser): number[] {
+  return (employee.customFields ?? [])
+    .filter((f) => f.type === "directManager")
+    .map((f) => userId(f.value))
+    .filter((id) => id !== null);
 }
 
 function userId(v: unknown): number | null {
@@ -38,7 +41,7 @@ function userId(v: unknown): number | null {
 }
 
 /**
- * Every Admin except the Excluded Admins, plus the employee's direct manager
+ * Every Admin except the Excluded Admins, plus the employee's direct managers
  * (even an Excluded one), each once. The employee is never escalated to about
  * their own Missed Form.
  */
@@ -51,7 +54,6 @@ export function escalationRecipients(opts: {
   const ids = opts.users
     .filter((u) => isAdmin(u) && !excluded.has(u.userId))
     .map((u) => u.userId);
-  const manager = directManagerId(opts.employee);
-  if (manager !== null) ids.push(manager);
+  ids.push(...directManagerIds(opts.employee));
   return [...new Set(ids)].filter((id) => id !== opts.employee.userId);
 }

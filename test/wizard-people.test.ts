@@ -48,7 +48,12 @@ describe("directManagers", () => {
   it("counts staff (not Admins) with a direct manager set, as the Worker reads it", () => {
     const d = directManagers([user(1, "owner", { customFields: [dm(2)] }), user(4, "user", { customFields: [dm(1)] }), user(5, "user", { customFields: [dm(null)] })]);
     expect(d).toEqual({ field: true, set: 1, staff: 2 });
-    expect(directManagerLine(d)).toBe("Direct managers: found. 1 of 2 staff have one, who also gets their escalations.");
+    expect(directManagerLine(d)).toBe("Direct managers: found. 1 of 2 staff have one, and direct managers also get their escalations.");
+  });
+
+  it("counts a staff member whose first directManager field is blank but a second is set (#129)", () => {
+    const second = { customFieldId: 10, name: "Site manager", type: "directManager", value: 1 };
+    expect(directManagers([user(4, "user", { customFields: [dm(null), second] })])).toEqual({ field: true, set: 1, staff: 1 });
   });
 
   it("says so when the account has no such field, or no one has one set", () => {

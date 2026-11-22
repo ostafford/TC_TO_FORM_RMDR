@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { ConnecteamUser } from "../src/connecteam/types.js";
-import { directManagerId, escalationRecipients } from "../src/escalation/recipients.js";
+import { directManagerIds, escalationRecipients } from "../src/escalation/recipients.js";
 import { escalation, type EscalationInput } from "../src/messages/escalation.js";
 import { MAX_MESSAGE } from "../src/messages/format.js";
 
@@ -105,26 +105,26 @@ describe("Escalation recipients", () => {
   });
 });
 
-describe("the direct manager", () => {
+describe("the direct managers", () => {
   it("is the value of the custom field whose type is directManager, whatever it's called", () => {
-    expect(directManagerId(user(501, managedBy(77, "Line manager")))).toBe(77);
+    expect(directManagerIds(user(501, managedBy(77, "Line manager")))).toEqual([77]);
   });
 
   it("is never read from a field of another type, even one named Direct manager", () => {
     const wrongType = user(501, { customFields: [{ customFieldId: 9, name: "Direct manager", type: "number", value: 77 }] });
-    expect(directManagerId(wrongType)).toBeNull();
+    expect(directManagerIds(wrongType)).toEqual([]);
   });
 
   it.each([[77], ["77"], [[77]], [{ value: 77 }]])("reads the user id from %j", (value) => {
-    expect(directManagerId(user(501, managedBy(value)))).toBe(77);
+    expect(directManagerIds(user(501, managedBy(value)))).toEqual([77]);
   });
 
   it.each([[null], [""], [[]], [{ value: null }], [0], ["not an id"]])("is none for a blank value: %j", (value) => {
-    expect(directManagerId(user(501, managedBy(value)))).toBeNull();
+    expect(directManagerIds(user(501, managedBy(value)))).toEqual([]);
   });
 
   it("is none when the account has no such field: Admins only", () => {
-    expect(directManagerId(user(501))).toBeNull();
+    expect(directManagerIds(user(501))).toEqual([]);
     expect(escalationRecipients({ users, employee: user(501), excludedAdminIds: [] })).toEqual([1, 2, 3]);
   });
 });

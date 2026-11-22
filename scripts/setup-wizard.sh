@@ -669,7 +669,7 @@ s_grace() {
 s_delay() {
   stage "Escalation delay"
   why "If the form is still missing this long after the reminder, your admins and" \
-      "the employee's direct manager are told. It gives the employee a fair chance" \
+      "the employee's direct managers are told. It gives the employee a fair chance" \
       "to fix it first."
   todo "Type the delay in hours (1.5 or 90m work too), or press Enter to keep the suggestion."
   local grace def shown input
@@ -735,7 +735,7 @@ ticked_admins() {
 s_recipients() {
   stage "Who receives escalations"
   why "Every admin in your Connecteam account receives escalations, plus the" \
-      "employee's direct manager. Untick anyone who shouldn't be on every one." \
+      "employee's direct managers. Untick anyone who shouldn't be on every one." \
       "New admins are included automatically. An unticked admin still hears about" \
       "their own direct reports."
   todo "Check the list: everyone ticked (✔) gets escalations." \

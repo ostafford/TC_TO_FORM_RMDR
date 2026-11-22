@@ -54,7 +54,7 @@ describe("impactLines", () => {
 
   it("recipients are read at send time, so Shifts not escalated yet go to the new list", () => {
     expect(lines(["EXCLUDED_ADMIN_IDS"], {}, counts({ notEscalated: 5 }))[0]).toBe(
-      "5 Shifts are not escalated yet. If they are, their escalations go to every admin except the ones now excluded, plus the employee's direct manager.",
+      "5 Shifts are not escalated yet. If they are, their escalations go to every admin except the ones now excluded, plus the employee's direct managers.",
     );
   });
 

@@ -151,6 +151,35 @@ describe("recipients, read live at send time", () => {
     expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId]);
   });
 
+  it("go to every direct manager when the account has more than one directManager field (#129)", async () => {
+    h.ct.users.get(JORDAN.userId)!.moreDirectManagers = [STAFF.userId];
+    await reminded();
+    await h.tick(ESCALATE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId, STAFF.userId]);
+  });
+
+  it("send someone named in two directManager fields one Escalation, not two", async () => {
+    h.ct.users.get(JORDAN.userId)!.moreDirectManagers = [MANAGER.userId];
+    await reminded();
+    await h.tick(ESCALATE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId]);
+  });
+
+  it("send an Admin named in a second directManager field one Escalation, not two", async () => {
+    h.ct.users.get(JORDAN.userId)!.moreDirectManagers = [ADMIN.userId];
+    await reminded();
+    await h.tick(ESCALATE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, MANAGER.userId]);
+  });
+
+  it("include an Excluded Admin named in a second directManager field", async () => {
+    setUp({ EXCLUDED_ADMIN_IDS: `${OWNER.userId}, ${ADMIN.userId}` });
+    h.ct.users.get(JORDAN.userId)!.moreDirectManagers = [ADMIN.userId];
+    await reminded();
+    await h.tick(ESCALATE);
+    expect(escalations().map((d) => d.userId)).toEqual([MANAGER.userId, ADMIN.userId]);
+  });
+
   it("are Admins only when the employee has no direct manager", async () => {
     delete h.ct.users.get(JORDAN.userId)!.directManager;
     await reminded();
