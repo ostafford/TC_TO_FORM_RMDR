@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDevVars } from "../scripts/lib/deploy-config.js";
+import { BASH } from "./bash.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const SCRIPT = join(root, "scripts/setup-wizard.sh");
@@ -179,7 +180,7 @@ function run(args: string[], input = "", envFile?: string, extraEnv: Record<stri
   // A key in the shell running the tests would stand in for the one in .dev.vars.
   const { CT_API_KEY: _, ...parent } = process.env;
   return new Promise((resolve) => {
-    const child = spawn("bash", [SCRIPT, ...args], {
+    const child = spawn(BASH, [SCRIPT, ...args], {
       cwd: root,
       env: {
         ...parent,
@@ -207,7 +208,7 @@ function run(args: string[], input = "", envFile?: string, extraEnv: Record<stri
 function interrupt(args: string[], input: string, at: string, envFile: string, extraEnv: Record<string, string>): Promise<{ code: number | null; out: string }> {
   const { CT_API_KEY: _, ...parent } = process.env;
   return new Promise((resolve) => {
-    const child = spawn("bash", [SCRIPT, ...args], {
+    const child = spawn(BASH, [SCRIPT, ...args], {
       cwd: root,
       env: { ...parent, NO_COLOR: "1", WIZARD_NO_BROWSER: "1", WIZARD_LOG: "off", WIZARD_DETAILS: join(tmpdir(), "wizard-test-wrangler.log"), CT_API_BASE: base, WIZARD_ENV_FILE: envFile, ...extraEnv },
     });
@@ -424,6 +425,15 @@ describe("steps 4 to 6, the Compliance Form, Shift Date Question and where to fi
     const r = await run(["--step", "form"], "\n\n\n", env);
     expect(r.code).toBe(0);
     expect(saved(env)).toMatchObject({ COMPLIANCE_FORM_ID: "501", SHIFT_DATE_QUESTION_ID: "q-shift", WHERE_TO_FIND: "the red folder" });
+  });
+
+  // macOS's own bash 3.2 read it back as "the manager\'s folder" (#114).
+  it("on a rerun, Enter keeps a saved place containing a quote exactly", async () => {
+    const env = envWithKey("COMPLIANCE_FORM_ID='501'\nSHIFT_DATE_QUESTION_ID='q-shift'\nWHERE_TO_FIND='the manager'\\''s folder'\n");
+    const r = await run(["--step", "form"], "\n\n\n", env);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('Messages will say: "Where: the manager\'s folder"');
+    expect(saved(env).WHERE_TO_FIND).toBe("the manager's folder");
   });
 });
 

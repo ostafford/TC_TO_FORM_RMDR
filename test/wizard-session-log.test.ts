@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BASH } from "./bash.js";
 
 const wizard = fileURLToPath(new URL("../scripts/setup-wizard.sh", import.meta.url));
 
@@ -35,7 +36,7 @@ function cleanLog(session: string, devVars: string): { log: string; mode: number
   const env = join(dir, ".dev.vars");
   writeFileSync(log, session);
   writeFileSync(env, devVars);
-  execFileSync("bash", ["-c", `${functions()}\nENV_FILE="$2"; clean_log "$1"`, "test", log, env]);
+  execFileSync(BASH, ["-c", `${functions()}\nENV_FILE="$2"; clean_log "$1"`, "test", log, env]);
   return { log: readFileSync(log, "utf8"), mode: statSync(log).mode & 0o777 };
 }
 
@@ -66,5 +67,13 @@ describe("the wizard's session log", () => {
 
   it("is readable by its owner only", () => {
     expect(cleanLog(session, devVars).mode).toBe(0o600);
+  });
+
+  // macOS's own bash 3.2 kept a backslash in the decoded value, so the log
+  // was searched for the wrong text (#114).
+  it("hides a secret containing a quote", () => {
+    const secret = "it's-a-secret-9b1f4c7e";
+    const { log } = cleanLog(`  webhook secret saved: ${secret}\n`, `CT_WEBHOOK_SECRET='it'\\''s-a-secret-9b1f4c7e'`);
+    expect(log).toBe("  webhook secret saved: [redacted]\n");
   });
 });
