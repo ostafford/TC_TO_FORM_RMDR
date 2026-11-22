@@ -17,10 +17,10 @@ const API_KEY = "3f9c2a71-5d4e-4b8a-9c6f-0e1d2c3b4a59";
 // As the wizard makes it: 32 random bytes in hex.
 const WEBHOOK_SECRET = "9b1f4c7e2a8d5f0369c1e4b7a2d8f5c0e3b6a9d2f5c8e1b4a7d0f3c6e9b2a5d8";
 
-/** `clean_log` and the helper it reads .dev.vars with, as the wizard defines them. */
+/** `clean_log`, and the helpers that write and read .dev.vars, as the wizard defines them. */
 function functions(): string {
   const script = readFileSync(wizard, "utf8");
-  return ["_existing", "clean_log"]
+  return ["write_env", "_existing", "clean_log"]
     .map((name) => {
       const m = script.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "m"));
       if (!m) throw new Error(`${name} not found in setup-wizard.sh`);
@@ -37,6 +37,14 @@ function cleanLog(session: string, devVars: string): { log: string; mode: number
   writeFileSync(env, devVars);
   execFileSync("bash", ["-c", `${functions()}\nENV_FILE="$2"; clean_log "$1"`, "test", log, env]);
   return { log: readFileSync(log, "utf8"), mode: statSync(log).mode & 0o777 };
+}
+
+/** Save `value` as the wizard does, then read it back as a rerun does. */
+function roundTrip(value: string): string {
+  const env = join(mkdtempSync(join(tmpdir(), "wizard-env-")), ".dev.vars");
+  return execFileSync("bash", ["-c", `${functions()}\nENV_FILE="$2"; write_env CT_PUBLISHER_NAME "$1" >/dev/null; _existing CT_PUBLISHER_NAME`, "test", value, env], {
+    encoding: "utf8",
+  });
 }
 
 describe("the wizard's session log", () => {
@@ -66,5 +74,19 @@ describe("the wizard's session log", () => {
 
   it("is readable by its owner only", () => {
     expect(cleanLog(session, devVars).mode).toBe(0o600);
+  });
+
+  // macOS's own bash 3.2 kept a backslash in the decoded value, so the log
+  // was searched for the wrong text (#114).
+  it("hides a secret containing a quote", () => {
+    const secret = "it's-a-secret-9b1f4c7e";
+    const { log } = cleanLog(`  webhook secret saved: ${secret}\n`, `CT_WEBHOOK_SECRET='it'\\''s-a-secret-9b1f4c7e'`);
+    expect(log).toBe("  webhook secret saved: [redacted]\n");
+  });
+});
+
+describe("a saved setting read back on a rerun (#114)", () => {
+  it.each(["Sam's bot", "'quoted'", "it''s", "plain"])("comes back exactly: %s", (value) => {
+    expect(roundTrip(value)).toBe(value);
   });
 });
