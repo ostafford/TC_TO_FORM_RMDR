@@ -187,6 +187,22 @@ describe("recipients, read live at send time", () => {
     expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId]);
   });
 
+  it("leave out a direct manager archived since, as archived Admins are (#131)", async () => {
+    await reminded();
+    h.ct.users.get(MANAGER.userId)!.isArchived = true;
+    await h.tick(ESCALATE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId]);
+    expect(h.ct.posts).toEqual([]);
+  });
+
+  it("still go to an active direct manager when another is archived", async () => {
+    h.ct.users.get(JORDAN.userId)!.moreDirectManagers = [STAFF.userId];
+    await reminded();
+    h.ct.users.get(MANAGER.userId)!.isArchived = true;
+    await h.tick(ESCALATE);
+    expect(escalations().map((d) => d.userId)).toEqual([OWNER.userId, ADMIN.userId, STAFF.userId]);
+  });
+
   it("include an Admin promoted after the Reminder, with nobody adding them", async () => {
     await reminded();
     h.ct.users.get(STAFF.userId)!.userType = "manager";

@@ -42,8 +42,9 @@ function userId(v: unknown): number | null {
 
 /**
  * Every Admin except the Excluded Admins, plus the employee's direct managers
- * (even an Excluded one), each once. The employee is never escalated to about
- * their own Missed Form.
+ * (even an Excluded one), each once. Like an Admin, a direct manager must be
+ * an active user in `users`: one archived or deleted since is left out
+ * (#131). The employee is never escalated to about their own Missed Form.
  */
 export function escalationRecipients(opts: {
   users: ConnecteamUser[];
@@ -54,6 +55,7 @@ export function escalationRecipients(opts: {
   const ids = opts.users
     .filter((u) => isAdmin(u) && !excluded.has(u.userId))
     .map((u) => u.userId);
-  ids.push(...directManagerIds(opts.employee));
+  const active = new Set(opts.users.filter((u) => !u.isArchived).map((u) => u.userId));
+  ids.push(...directManagerIds(opts.employee).filter((id) => active.has(id)));
   return [...new Set(ids)].filter((id) => id !== opts.employee.userId);
 }

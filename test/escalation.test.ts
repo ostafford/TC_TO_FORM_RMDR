@@ -92,6 +92,12 @@ describe("Escalation recipients", () => {
     expect(escalationRecipients({ users, employee: user(501, managedBy(4)), excludedAdminIds: [] })).toEqual([1, 2, 3, 4]);
   });
 
+  it("leave out a direct manager who isn't an active user: archived, or not listed at all", () => {
+    const archived = user(5, { isArchived: true });
+    expect(escalationRecipients({ users: [...users, archived], employee: user(501, managedBy(5)), excludedAdminIds: [] })).toEqual([1, 2, 3]);
+    expect(escalationRecipients({ users, employee: user(501, managedBy(77)), excludedAdminIds: [] })).toEqual([1, 2, 3]);
+  });
+
   it("include an Excluded Admin who is the employee's direct manager", () => {
     expect(escalationRecipients({ users, employee: user(501, managedBy(2)), excludedAdminIds: [2, 3] })).toEqual([1, 2]);
   });
