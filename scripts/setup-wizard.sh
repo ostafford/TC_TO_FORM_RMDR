@@ -93,8 +93,8 @@ confirm() {
 # quotes or a plain dotenv double-quoted value undone.
 _existing() {
   [[ -f "$ENV_FILE" ]] || return 1
-  # The quote goes in as a variable: bash 3.2 (macOS's own) keeps the
-  # backslash of a literal \' in the replacement, and 4.3+ drops it (#114).
+  # The quote goes in as a variable: macOS's own bash 3.2 keeps the backslash
+  # of a literal \' in the replacement (#114). Newer bash reportedly drops it.
   local line value sq="'\\''" q="'"; line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
   value="${line#*=}"
   if [[ "$value" == \'*\' ]]; then value="${value:1:${#value}-2}"; value="${value//"$sq"/$q}"
