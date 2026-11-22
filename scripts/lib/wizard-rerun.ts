@@ -118,7 +118,7 @@ export function impactLines(keys: string[], before: Record<string, string>, afte
     }
   }
   if (changed(keys, "EXCLUDED_ADMIN_IDS")) {
-    const rest = "go to every admin except the ones now excluded, plus the employee's direct manager.";
+    const rest = "go to every admin except the ones now excluded, plus the employee's direct managers.";
     if (!c || c.notEscalated === 0) lines.push(`Escalations from now on ${rest}`);
     else lines.push(`${shifts(c.notEscalated)} not escalated yet. If they are, their escalations ${rest}`);
   }

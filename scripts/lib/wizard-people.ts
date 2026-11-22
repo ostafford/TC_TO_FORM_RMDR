@@ -34,8 +34,8 @@ export function adminRows(users: ConnecteamUser[]): AdminRow[] {
 
 /**
  * Whether the account uses direct managers: it has a `directManager` field,
- * and how many staff have one set. Escalations reach a direct manager even
- * when they're unticked (#25).
+ * and how many staff have one set. Escalations reach every direct manager,
+ * even an unticked one (#25, #129).
  */
 export function directManagers(users: ConnecteamUser[]): { field: boolean; set: number; staff: number } {
   const staff = users.filter((u) => !u.isArchived && !isAdmin(u));
@@ -47,7 +47,7 @@ export function directManagers(users: ConnecteamUser[]): { field: boolean; set: 
 export function directManagerLine(d: { field: boolean; set: number; staff: number }): string {
   if (!d.field) return "Direct managers: not used in this account, so escalations go to admins only.";
   if (d.set === 0) return "Direct managers: the field exists, but no one has one set yet, so escalations go to admins only for now.";
-  return `Direct managers: found. ${d.set} of ${d.staff} staff have one, who also gets their escalations.`;
+  return `Direct managers: found. ${d.set} of ${d.staff} staff have one, and direct managers also get their escalations.`;
 }
 
 /** The chat list's labels: the title, what kind it is, and the id where two share a title. */

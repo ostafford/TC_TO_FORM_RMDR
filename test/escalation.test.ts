@@ -105,7 +105,7 @@ describe("Escalation recipients", () => {
   });
 });
 
-describe("the direct manager", () => {
+describe("the direct managers", () => {
   it("is the value of the custom field whose type is directManager, whatever it's called", () => {
     expect(directManagerIds(user(501, managedBy(77, "Line manager")))).toEqual([77]);
   });

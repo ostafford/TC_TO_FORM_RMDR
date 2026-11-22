@@ -40,7 +40,7 @@ export interface FakeUser {
   /** The user's direct manager, as the `directManager` custom field's value. */
   directManager?: unknown;
   /** Values of further `directManager` fields, such as a "Site manager": an account can create more than one (#129). */
-  otherManagers?: unknown[];
+  moreDirectManagers?: unknown[];
 }
 
 export interface FakeSubmission {
@@ -275,12 +275,13 @@ export class FakeConnecteam {
         : statused;
       const offset = Number(query.offset ?? 0);
       const page = matched.slice(offset, offset + Number(query.limit ?? 10));
-      const users = page.map(({ directManager, otherManagers = [], ...u }) => ({
+      const users = page.map(({ directManager, moreDirectManagers = [], ...u }) => ({
         userType: "user",
         ...u,
         customFields: [
           ...(directManager === undefined ? [] : [{ customFieldId: 25145114, name: "Direct manager", type: "directManager", value: directManager }]),
-          ...otherManagers.map((value, i) => ({ customFieldId: 46200000 + i, name: `Site manager ${i + 1}`, type: "directManager", value })),
+          // Made-up ids for fields an account added later, unlike the built-in one above.
+          ...moreDirectManagers.map((value, i) => ({ customFieldId: 46200000 + i, name: `Site manager ${i + 1}`, type: "directManager", value })),
         ],
       }));
       return json(200, { requestId: "r", data: { users }, paging: { offset: offset + users.length } });

@@ -23,7 +23,7 @@ form, timings, recipients) supplied as config, never code.
    Reminder Task on a task board. If they're still clocked in, the Reminder
    tells them.
 4. **Escalation.** If the form is still missing after a further delay
-   (default 4 hours), each admin and the employee's direct manager are
+   (default 4 hours), each admin and the employee's direct managers are
    messaged. Escalations raised overnight (9 pm to 7 am) are held and sent as
    one summary in the morning.
 5. **Late submissions count.** A submission at any point cancels the
