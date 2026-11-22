@@ -22,6 +22,11 @@ git-ignored `.dev.vars` (copy `.dev.vars.example`; `D1_DATABASE_ID` is the
 database). `npm run deploy` runs `scripts/deploy-config.ts`, which builds
 `wrangler.deploy.json` (also git-ignored) from the two, then deploys that.
 
+**Keep a copy of `.dev.vars` somewhere safe**, such as a password manager, and
+update it after every setup step you rerun. Nothing else has it: it isn't on
+GitHub, Cloudflare never shows a secret's value again, and without
+`D1_DATABASE_ID` a redeploy can't find the Deployment's database.
+
 Why: values kept in the tracked config were silently reset to the blank
 template by ordinary git use (a branch switch, a discard, a pull), and a plain
 `wrangler deploy` then pushed blank settings and a dead database id to the live
@@ -64,13 +69,16 @@ npx wrangler d1 create clock-out-form-reminder
 npm run deploy:config -- --check-live
 npm run db:migrate
 
-# Secrets
+# Verify, then deploy (it warns that the new Worker has no secrets yet)
+npm run typecheck && npm test
+npm run deploy
+
+# Secrets, now that the Worker exists
 npx wrangler secret put CT_API_KEY --config wrangler.deploy.json
 npx wrangler secret put CT_WEBHOOK_SECRET --config wrangler.deploy.json
 
-# Verify, then deploy
-npm run typecheck && npm test
-npm run deploy
+# Confirm: the live Worker has both secrets and this database
+npm run deploy:config -- --check-live
 ```
 
 The Workers **Paid** plan is required (ADR-0002). Then subscribe the
@@ -153,6 +161,9 @@ Reading the live database, e.g. for a backup:
 npm run deploy:config && npx wrangler d1 export clock-out-form-reminder --remote --output=backup.sql --config wrangler.deploy.json
 ```
 
+`backup.sql` holds employee names (in Reminder Tasks and the sends not
+delivered), so keep it private and don't share it. Git ignores it.
+
 ## Tests
 
 GitHub Actions runs `npm run typecheck` and `npm test` on every push and pull
@@ -182,6 +193,9 @@ the same Connecteam account is steps 1 to 4. **Removing for good** adds step 5.
    ```bash
    npm run deploy:config && npx wrangler d1 export clock-out-form-reminder --remote --output=backup.sql --config wrangler.deploy.json
    ```
+
+   That state includes employee names (in Reminder Tasks and the sends not
+   delivered), so keep `backup.sql` private and don't share it. Git ignores it.
 
 2. **Delete this Deployment's Connecteam webhooks first**, so Connecteam stops
    posting to a URL that's about to disappear. There are three: the
