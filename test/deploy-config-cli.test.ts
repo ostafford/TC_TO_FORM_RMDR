@@ -1,16 +1,18 @@
 /**
  * `scripts/deploy-config.ts --check-live` run as `npm run deploy` runs it,
- * against a fake wrangler: the live Worker's secrets (#80).
+ * against a fake wrangler: the live Worker's secrets (#80), and the database
+ * refusals (#89).
  */
 import { describe, it, expect } from "vitest";
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const DB = "11111111-2222-3333-4444-555555555555";
+const OTHER_DB = "99999999-8888-7777-6666-555555555555";
 
 const DEV_VARS = [
   `D1_DATABASE_ID=${DB}`,
@@ -28,23 +30,32 @@ const DEV_VARS = [
   "ALERTS_CHANNEL_ID=alerts-1",
 ].join("\n");
 
+/** What the fake wrangler's account holds, beyond the live Worker's secrets. */
+interface FakeAccount {
+  /** The account's databases (`d1 list`). Default: the one in .dev.vars. */
+  databases?: string[];
+  /** The live Worker's database binding. Default: the one in .dev.vars. */
+  liveDatabase?: string;
+}
+
 /**
  * A stand-in for wrangler. `secrets` set: a live Worker exists with those
- * secret names (and the same database). Unset: no Worker yet.
+ * secret names. Unset: no Worker yet.
  */
-function fakeWrangler(secrets?: string[]): { bin: string; dir: string } {
+function fakeWrangler(secrets?: string[], account: FakeAccount = {}): { bin: string; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "deploy-config-"));
   const bin = join(dir, "wrangler");
   const live = secrets !== undefined;
   // As wrangler 4.151.2 prints them.
   const status = JSON.stringify({ versions: [{ version_id: "v1", percentage: 100 }] });
-  const version = JSON.stringify({ resources: { bindings: [{ name: "DB", type: "d1", database_id: DB }] } });
+  const version = JSON.stringify({ resources: { bindings: [{ name: "DB", type: "d1", database_id: account.liveDatabase ?? DB }] } });
+  const databases = JSON.stringify((account.databases ?? [DB]).map((uuid) => ({ uuid, name: "clock-out-form-reminder" })));
   const list = JSON.stringify((secrets ?? []).map((name) => ({ name, type: "secret_text" })));
   writeFileSync(
     bin,
     `#!/usr/bin/env bash
 case "$1 $2" in
-  "d1 list") echo '[{"uuid":"${DB}","name":"clock-out-form-reminder"}]' ;;
+  "d1 list") echo '${databases}' ;;
   "deployments status") ${live ? `echo '${status}'` : `echo "This Worker does not exist on your account. [code: 10007]" >&2; exit 1`} ;;
   "versions view") echo '${version}' ;;
   "secret list") echo '${list}' ;;
@@ -56,8 +67,14 @@ esac
   return { bin, dir };
 }
 
-function checkLive(secrets?: string[], args: string[] = []): Promise<{ code: number; out: string }> {
-  const { bin, dir } = fakeWrangler(secrets);
+/** Run the check. `config` is where it writes the built config, to see whether a refusal removed it. */
+function checkLive(
+  secrets?: string[],
+  args: string[] = [],
+  account: FakeAccount = {},
+): Promise<{ code: number; out: string; config: string }> {
+  const { bin, dir } = fakeWrangler(secrets, account);
+  const config = join(dir, "wrangler.deploy.json");
   const devVars = join(dir, ".dev.vars");
   writeFileSync(devVars, DEV_VARS);
   return new Promise((resolve) => {
@@ -66,9 +83,9 @@ function checkLive(secrets?: string[], args: string[] = []): Promise<{ code: num
       ["scripts/deploy-config.ts", "--check-live", ...args],
       {
         cwd: root,
-        env: { ...process.env, WRANGLER_CMD: bin, DEV_VARS_FILE: devVars, DEPLOY_CONFIG_FILE: join(dir, "wrangler.deploy.json") },
+        env: { ...process.env, WRANGLER_CMD: bin, DEV_VARS_FILE: devVars, DEPLOY_CONFIG_FILE: config },
       },
-      (err, stdout, stderr) => resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, out: stdout + stderr }),
+      (err, stdout, stderr) => resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, out: stdout + stderr, config }),
     );
   });
 }
@@ -107,5 +124,33 @@ describe("npm run deploy and the live Worker's secrets", { timeout: 30_000 }, ()
     const r = await checkLive(undefined, ["--secrets-follow"]);
     expect(r.code).toBe(0);
     expect(r.out).not.toContain("now, or the Worker will do nothing");
+  });
+});
+
+describe("npm run deploy and the database", { timeout: 30_000 }, () => {
+  const BOTH = ["CT_API_KEY", "CT_WEBHOOK_SECRET"];
+
+  it("refuses a database that isn't on the logged-in account, and removes the built config", async () => {
+    const r = await checkLive(BOTH, [], { databases: [OTHER_DB] });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`✗ Database ${DB} (D1_DATABASE_ID in .dev.vars) isn't on the Cloudflare account wrangler is logged in to.`);
+    expect(r.out).toContain("Nothing was deployed or changed.");
+    expect(existsSync(r.config)).toBe(false);
+  });
+
+  it("refuses a database different from the live Worker's, and removes the built config", async () => {
+    const r = await checkLive(BOTH, [], { databases: [DB, OTHER_DB], liveDatabase: OTHER_DB });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("✗ This deploy would point the live Worker at a different database:");
+    expect(r.out).toContain(`    live:      ${OTHER_DB}`);
+    expect(r.out).toContain(`    .dev.vars: ${DB}`);
+    expect(existsSync(r.config)).toBe(false);
+  });
+
+  it("with --allow-database-change, carries on to a different database and keeps the built config", async () => {
+    const r = await checkLive(BOTH, ["--allow-database-change"], { databases: [DB, OTHER_DB], liveDatabase: OTHER_DB });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("✓ Matches the live Worker's database (change allowed).");
+    expect(existsSync(r.config)).toBe(true);
   });
 });
